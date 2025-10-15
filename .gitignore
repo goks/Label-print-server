@@ -1,0 +1,3 @@
+# Secrets and config files
+.env
+config.ini
