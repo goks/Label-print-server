@@ -14,6 +14,7 @@ DB_SERVER = os.environ.get('DB_SERVER')
 DB_NAME = os.environ.get('DB_NAME')
 SETTINGS_FILE = 'db_settings.json'
 SELECTED_PRINTER = None  # Will store the selected printer name
+BARTENDER_TEMPLATE = None  # Will store the BarTender template path
 
 def get_available_printers():
     """Get list of available printers on Windows"""
@@ -45,7 +46,7 @@ def get_available_printers():
 
 def load_db_settings():
     """Load database settings from file or environment variables"""
-    global DB_SERVER, DB_NAME, SELECTED_PRINTER
+    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE
     
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -54,19 +55,22 @@ def load_db_settings():
                 DB_SERVER = settings.get('server', DB_SERVER)
                 DB_NAME = settings.get('database', DB_NAME)
                 SELECTED_PRINTER = settings.get('printer', None)
+                BARTENDER_TEMPLATE = settings.get('bartender_template', None)
                 print(f"Server: Loaded settings - Server: {DB_SERVER}, DB: {DB_NAME}, Printer: {SELECTED_PRINTER}")
+                print(f"Server: BarTender Template: {BARTENDER_TEMPLATE}")
         except Exception as e:
             print(f"Error loading settings: {e}")
 
-def save_db_settings(server, database, printer=None):
-    """Save database and printer settings to file"""
-    global DB_SERVER, DB_NAME, SELECTED_PRINTER
+def save_db_settings(server, database, printer=None, bartender_template=None):
+    """Save database, printer and BarTender settings to file"""
+    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE
     
     try:
         settings = {
             'server': server, 
             'database': database,
-            'printer': printer
+            'printer': printer,
+            'bartender_template': bartender_template
         }
         with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f)
@@ -75,7 +79,9 @@ def save_db_settings(server, database, printer=None):
         DB_SERVER = server
         DB_NAME = database
         SELECTED_PRINTER = printer
+        BARTENDER_TEMPLATE = bartender_template
         print(f"Server: Saved settings - Server: {server}, DB: {database}, Printer: {printer}")
+        print(f"Server: BarTender Template: {bartender_template}")
         return True
     except Exception as e:
         print(f"Error saving settings: {e}")
@@ -102,6 +108,8 @@ def get_party_info(quotation_number):
     # Format quotation number as 25-character string with 'G-' prefix, right-aligned
     formatted_vch_no = f"G-{quotation_number}".rjust(25)
     
+    print(f"Searching for {formatted_vch_no}")
+    
     conn_str = (
         f"DRIVER={{SQL Server}};"
         f"SERVER={DB_SERVER};"
@@ -116,7 +124,7 @@ def get_party_info(quotation_number):
         cursor = conn.cursor()
         
         # Step 1: Get MasterCode from Tran2 table
-        cursor.execute("SELECT CM1 FROM dbo.Tran2 WHERE VchType='26' AND VchNo=?", formatted_vch_no)
+        cursor.execute("SELECT CM1 FROM dbo.Tran2 WHERE VchType='26' AND MasterCode2='201' AND VchNo=?", formatted_vch_no)
         tran_row = cursor.fetchone()
         
         if not tran_row or not tran_row.CM1:
@@ -124,6 +132,7 @@ def get_party_info(quotation_number):
             return None
             
         master_code = tran_row.CM1
+        # print(f"Mastercode {master_code}")
         
         # Step 2: Get shop name from Master1 table
         cursor.execute("SELECT Name, Code FROM Master1 WHERE MasterType=2 AND Code=?", master_code)
@@ -211,12 +220,129 @@ def format_label(quotation, party_info):
     
     return '\n'.join(label_lines)
 
-def print_label(quotation, party, address='', phone='', mobile=''):
-    """Print label using selected printer - runs silently on server side"""
+def print_label_bartender(quotation, party_info, bartender_template_path):
+    """Print label using BarTender with template and data"""
     global SELECTED_PRINTER
     
     try:
-        # Create party info dictionary for formatting
+        # Extract data for BarTender variables
+        customer_name = party_info.get('name', '')
+        address_parts = [
+            party_info.get('address1', ''),
+            party_info.get('address2', ''),
+            party_info.get('address3', ''),
+            party_info.get('address4', '')
+        ]
+        address = ', '.join([part.strip() for part in address_parts if part.strip()])
+        phone = party_info.get('phone', '')
+        mobile = party_info.get('mobile', '')
+        
+        # Combine phone and mobile into a single contact field
+        contact_numbers = []
+        if phone:
+            contact_numbers.append(phone)
+        if mobile:
+            contact_numbers.append(mobile)
+        combined_contact = ' | '.join(contact_numbers)  # Join with separator
+        
+        from datetime import datetime
+        packed_time = datetime.now().strftime('%d/%m/%Y %H:%M')
+        
+        # Log the print request
+        print(f"Server: BarTender print request for quotation {quotation}")
+        print(f"Server: Template: {bartender_template_path}")
+        print(f"Server: Customer: {customer_name}")
+        print(f"Server: Combined contact: {combined_contact}")
+        
+        # Method 1: Try BarTender Command Line Interface
+        try:
+            bartender_cmd = [
+                'bartend.exe',
+                bartender_template_path,
+                '/AF=quotation_number=' + quotation,
+                '/AF=customer_name=' + customer_name,
+                '/AF=address=' + address,
+                '/AF=mobile=' + combined_contact,
+                '/AF=packed_time=' + packed_time,
+                '/P'  # Print command
+            ]
+            
+            # Add printer selection if specified
+            if SELECTED_PRINTER:
+                bartender_cmd.append(f'/PRN={SELECTED_PRINTER}')
+                print(f"Server: Using HARDCODED BarTender printer: {SELECTED_PRINTER}")
+            else:
+                print(f"Server: Using default BarTender printer")
+            
+            # Close BarTender after printing
+            bartender_cmd.append('/C')
+            
+            result = subprocess.run(bartender_cmd,
+                                  capture_output=True,
+                                  text=True,
+                                  timeout=30,
+                                  creationflags=subprocess.CREATE_NO_WINDOW)
+            
+            if result.returncode == 0:
+                print(f"Server: BarTender print successful")
+                return True
+            else:
+                print(f"Server: BarTender CLI failed: {result.stderr}")
+                
+        except Exception as cli_error:
+            print(f"Server: BarTender CLI method failed: {cli_error}")
+        
+        # Method 2: Try BarTender COM Interface (if CLI fails)
+        try:
+            import win32com.client
+            
+            print("Server: Trying BarTender COM interface")
+            
+            # Create BarTender application object
+            bt_app = win32com.client.Dispatch("BarTender.Application")
+            
+            # bt_app.Visible = True # Make BarTender visible for debugging
+            
+            bt_format = bt_app.Formats.Open(bartender_template_path, False, "")
+            
+            # Set data sources/variables
+            bt_format.SetNamedSubStringValue("quotation_number", quotation)
+            bt_format.SetNamedSubStringValue("customer_name", customer_name)
+            bt_format.SetNamedSubStringValue("address", address)
+            bt_format.SetNamedSubStringValue("mobile", combined_contact)
+            bt_format.SetNamedSubStringValue("packed_time", packed_time)
+            
+            # Print the label
+            if SELECTED_PRINTER:
+                # Set the printer for this format
+                bt_format.Printer = SELECTED_PRINTER
+                print(f"Server: BarTender printer set to: {SELECTED_PRINTER}")
+                
+                # Use PrintOut with correct parameters (PrintDialog, JobDialog)
+                bt_format.PrintOut(False, False)  # False, False = no print dialog, no job dialog
+            else:
+                bt_format.PrintOut(False, False)
+            
+            # Close the format and application
+            bt_format.Close(0)  # 0 = don't save changes
+            bt_app.Quit(0)      # 0 = don't save changes
+            
+            print(f"Server: BarTender COM print successful")
+            return True
+                
+        except Exception as com_error:
+            print(f"Server: BarTender COM method failed: {com_error}")
+        return False
+    except Exception as e:
+        print(f"Server: BarTender print error: {e}")
+        return False
+
+def print_label(quotation, party, address='', phone='', mobile=''):
+    """Print label using BarTender (if template configured) or fallback to text printing"""
+    global SELECTED_PRINTER, BARTENDER_TEMPLATE
+    
+    try:
+        # Create party info dictionary for BarTender
         party_info = {
             'name': party,
             'address1': address.split(',')[0].strip() if address else '',
@@ -227,12 +353,38 @@ def print_label(quotation, party, address='', phone='', mobile=''):
             'mobile': mobile
         }
         
+        # Try BarTender printing first if template is configured
+        if BARTENDER_TEMPLATE and os.path.exists(BARTENDER_TEMPLATE):
+            print(f"Server: Using BarTender template: {BARTENDER_TEMPLATE}")
+            success = print_label_bartender(quotation, party_info, BARTENDER_TEMPLATE)
+            if success:
+                return True
+            else:
+                print(f"Server: BarTender failed, falling back to text printing")
+        else:
+            if BARTENDER_TEMPLATE:
+                print(f"Server: BarTender template not found: {BARTENDER_TEMPLATE}")
+            else:
+                print(f"Server: No BarTender template configured, using text printing")
+        
+        # Fallback to text-based printing (original method)
+        return print_label_text(quotation, party_info)
+        
+    except Exception as e:
+        print(f"Server: Print error: {e}")
+        return False
+
+def print_label_text(quotation, party_info):
+    """Original text-based printing method (fallback)"""
+    global SELECTED_PRINTER
+    
+    try:
         # Use the professional label formatting
         label_text = format_label(quotation, party_info)
         
         # Log which printer will be used
         printer_to_use = SELECTED_PRINTER if SELECTED_PRINTER else "Default System Printer"
-        print(f"Server: Printing label for quotation {quotation}")
+        print(f"Server: Text printing for quotation {quotation}")
         print(f"Server: Target printer: {printer_to_use}")
         print(f"Label content:\n{label_text}")
         
@@ -315,10 +467,10 @@ def print_label(quotation, party, address='', phone='', mobile=''):
         return success
         
     except subprocess.TimeoutExpired:
-        print("Server: Print command timed out")
+        print("Server: Text print command timed out")
         return False
     except Exception as e:
-        print(f"Server: Print error: {e}")
+        print(f"Server: Text print error: {e}")
         return False
 
 @app.route('/')
@@ -409,11 +561,12 @@ def print_label_route():
 
 @app.route('/get-settings', methods=['GET'])
 def get_settings():
-    """Get current database and printer settings"""
+    """Get current database, printer and BarTender settings"""
     return jsonify({
         'server': DB_SERVER or '',
         'database': DB_NAME or '',
-        'printer': SELECTED_PRINTER or ''
+        'printer': SELECTED_PRINTER or '',
+        'bartender_template': BARTENDER_TEMPLATE or ''
     })
 
 @app.route('/get-printers', methods=['GET'])
@@ -424,7 +577,7 @@ def get_printers():
 
 @app.route('/save-settings', methods=['POST'])
 def save_settings():
-    """Save new database and printer settings"""
+    """Save new database, printer and BarTender settings"""
     data = request.json
     if not data:
         return jsonify({'success': False, 'error': 'No data provided'})
@@ -432,6 +585,7 @@ def save_settings():
     server = data.get('server', '').strip()
     database = data.get('database', '').strip()
     printer = data.get('printer', '').strip()
+    bartender_template = data.get('bartender_template', '').strip()
     
     if not server or not database:
         return jsonify({'success': False, 'error': 'Server and database name are required'})
@@ -448,12 +602,21 @@ def save_settings():
         conn.close()
         
         # Connection successful, save all settings
-        if save_db_settings(server, database, printer if printer else None):
+        if save_db_settings(server, database, printer if printer else None, bartender_template if bartender_template else None):
             if printer:
                 print(f"Server: HARDCODED printer set to: {printer}")
                 print(f"Server: All future print jobs will use: {printer}")
             else:
                 print(f"Server: Printer selection cleared - will use default printer")
+                
+            if bartender_template:
+                if os.path.exists(bartender_template):
+                    print(f"Server: BarTender template configured: {bartender_template}")
+                else:
+                    print(f"Server: WARNING - BarTender template file not found: {bartender_template}")
+            else:
+                print(f"Server: BarTender template cleared - will use text printing")
+                
             return jsonify({'success': True})
         else:
             return jsonify({'success': False, 'error': 'Failed to save settings'})

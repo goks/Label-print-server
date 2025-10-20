@@ -1,75 +1,842 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Label Print Station</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Label Print Server</title>
     <style>
-        body { font-family: sans-serif; font-size: 2em; text-align: center; margin-top: 2em; }
-        #party { margin-top: 1em; color: blue; font-size: 1.8em; white-space: pre-line; max-width: 80%; margin-left: auto; margin-right: auto; }
-        input[type="text"] { font-size: 2em; padding: 0.5em; width: 6em; }
-        button { font-size: 2em; margin: 1em; }
-        
-        /* Settings styles */
-        .settings-btn { position: absolute; top: 10px; right: 10px; font-size: 1em; padding: 0.5em; }
-        .modal { display: none; position: fixed; z-index: 1; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
-        .modal-content { background-color: white; margin: 5% auto; padding: 20px; border: 1px solid #888; width: 60%; max-width: 500px; border-radius: 10px; }
-        .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
-        .close:hover { color: black; }
-        .form-group { margin: 15px 0; text-align: left; }
-        .form-group label { display: block; font-size: 0.8em; margin-bottom: 5px; }
-        .form-group input { width: 100%; padding: 8px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 4px; }
-        .form-group select { width: 70%; padding: 8px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 4px; }
-        .refresh-btn { margin-left: 10px; padding: 5px 10px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 4px; background: #f8f9fa; cursor: pointer; }
-        .refresh-btn:hover { background: #e9ecef; }
-        .btn-save { background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em; }
-        .btn-save:hover { background-color: #45a049; }
-        .status-msg { margin-top: 10px; padding: 10px; border-radius: 4px; font-size: 0.8em; }
-        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .hidden { display: none !important; }
-        .printing { opacity: 0.7; pointer-events: none; }
-        .print-status { margin-top: 0.5em; font-size: 1em; color: #666; }
-        
-        /* Label preview styles */
-        .preview-btn { font-size: 1.5em; margin: 0.5em; background: #007bff; color: white; }
-        .preview-modal { display: none; position: fixed; z-index: 2; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); }
-        .preview-content { background-color: white; margin: 2% auto; padding: 20px; border: 1px solid #888; width: 80%; max-width: 600px; border-radius: 10px; }
-        .preview-text { font-family: 'Courier New', monospace; white-space: pre-line; background: #f8f9fa; padding: 20px; border: 1px solid #ddd; border-radius: 5px; font-size: 0.9em; }
-        .preview-buttons { text-align: center; margin-top: 20px; }
-        .preview-buttons button { margin: 0 10px; padding: 10px 20px; font-size: 1em; }
-        .btn-close { background: #6c757d; color: white; border: none; border-radius: 4px; }
+        /* CSS Variables for consistent theming */
+        :root {
+            --primary-color: #2563eb;
+            --primary-hover: #1d4ed8;
+            --secondary-color: #64748b;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+            --warning-color: #f59e0b;
+            --background-color: #f8fafc;
+            --card-background: #ffffff;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+            --border-radius: 12px;
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+            --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        }
+
+        /* Reset and base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: var(--text-primary);
+            line-height: 1.6;
+            padding: 1rem;
+        }
+
+        /* Container and layout */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            min-height: calc(100vh - 2rem);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            letter-spacing: -0.025em;
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+            font-weight: 300;
+        }
+
+        /* Main card */
+        .main-card {
+            background: var(--card-background);
+            border-radius: 20px;
+            box-shadow: var(--shadow-xl);
+            padding: 3rem;
+            width: 100%;
+            max-width: 700px;
+            position: relative;
+            -webkit-backdrop-filter: blur(10px);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        /* Settings button */
+        .settings-btn {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+            background: var(--secondary-color);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 56px;
+            height: 56px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.3rem;
+            box-shadow: var(--shadow-md);
+        }
+
+        .settings-btn:hover {
+            background: var(--primary-color);
+            transform: rotate(90deg) scale(1.1);
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* Form styles */
+        .quotation-section {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .quotation-section h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            color: var(--text-primary);
+        }
+
+        .input-wrapper {
+            position: relative;
+            margin-bottom: 1.5rem;
+        }
+
+        .quotation-input {
+            width: 100%;
+            max-width: 300px;
+            padding: 1rem 1.5rem;
+            border: 3px solid var(--border-color);
+            border-radius: var(--border-radius);
+            font-size: 1.5rem;
+            text-align: center;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            background: #ffffff;
+            letter-spacing: 0.05em;
+        }
+
+        .quotation-input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+            transform: scale(1.02);
+        }
+
+        /* Party info display */
+        .party-info {
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border: 3px solid var(--border-color);
+            border-radius: var(--border-radius);
+            padding: 2rem;
+            margin: 1.5rem 0;
+            min-height: 160px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            font-style: italic;
+            transition: all 0.4s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .party-info::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            transition: left 0.5s;
+        }
+
+        .party-info.populated {
+            background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+            border-color: var(--success-color);
+            color: var(--text-primary);
+            font-style: normal;
+            transform: scale(1.02);
+        }
+
+        .party-info.populated::before {
+            left: 100%;
+        }
+
+        .party-placeholder {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+        }
+
+        .party-details {
+            text-align: center;
+            width: 100%;
+        }
+
+        .party-name {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+            color: var(--primary-color);
+        }
+
+        .party-address {
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        .party-contact {
+            font-size: 1rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        /* Button styles */
+        .btn {
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            text-decoration: none;
+            min-height: 56px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.3s;
+        }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-hover) 100%);
+            color: white;
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, var(--secondary-color) 0%, #475569 100%);
+            color: white;
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-secondary:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, var(--success-color) 0%, #059669 100%);
+            color: white;
+            box-shadow: var(--shadow-md);
+        }
+
+        .btn-success:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 1rem;
+            margin-top: 2rem;
+            justify-content: center;
+        }
+
+        .btn-group .btn {
+            flex: 1;
+            max-width: 200px;
+        }
+
+        /* Status messages */
+        .print-status {
+            text-align: center;
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            margin-top: 1.5rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            font-size: 1.1rem;
+        }
+
+        .print-status.printing {
+            background: linear-gradient(135deg, #fef3c7 0%, #fed7aa 100%);
+            color: #92400e;
+            border: 2px solid #f59e0b;
+        }
+
+        .print-status.success {
+            background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+            color: #065f46;
+            border: 2px solid var(--success-color);
+        }
+
+        .print-status.error {
+            background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+            color: #991b1b;
+            border: 2px solid var(--error-color);
+        }
+
+        /* Loading spinner */
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-top: 3px solid #ffffff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Modal styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            animation: fadeIn 0.3s ease;
+        }
+
+        .modal-content {
+            background: var(--card-background);
+            margin: 2% auto;
+            padding: 2.5rem;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+            animation: slideIn 0.4s ease;
+            box-shadow: var(--shadow-xl);
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideIn {
+            from { transform: translateY(-50px) scale(0.95); opacity: 0; }
+            to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+
+        .modal h3 {
+            color: var(--text-primary);
+            margin-bottom: 2rem;
+            font-size: 1.75rem;
+            font-weight: 700;
+            text-align: center;
+        }
+
+        .close {
+            position: absolute;
+            top: 1.5rem;
+            right: 1.5rem;
+            color: var(--text-secondary);
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
+
+        .close:hover {
+            background: var(--error-color);
+            color: white;
+            transform: scale(1.1);
+        }
+
+        /* Settings form styles */
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+            font-size: 1rem;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 0.875rem 1rem;
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius);
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: #ffffff;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .form-group input.template-path {
+            width: 70%;
+        }
+
+        .refresh-btn {
+            margin-left: 0.75rem;
+            padding: 0.875rem 1rem;
+            background: #f1f5f9;
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .refresh-btn:hover {
+            background: #e2e8f0;
+            border-color: var(--primary-color);
+            transform: scale(1.05);
+        }
+
+        .help-text {
+            display: block;
+            color: var(--text-secondary);
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        /* Status message in modals */
+        .status-msg {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .status-msg.success {
+            background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+            color: #065f46;
+            border: 2px solid var(--success-color);
+        }
+
+        .status-msg.error {
+            background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+            color: #991b1b;
+            border: 2px solid var(--error-color);
+        }
+
+        /* Preview modal styles */
+        .preview-modal {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+        }
+
+        .preview-content {
+            background: var(--card-background);
+            margin: 3% auto;
+            padding: 2.5rem;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 550px;
+            position: relative;
+            animation: slideIn 0.4s ease;
+            box-shadow: var(--shadow-xl);
+        }
+
+        .preview-text {
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border: 2px solid var(--border-color);
+            border-radius: var(--border-radius);
+            padding: 2rem;
+            margin: 1.5rem 0;
+            font-family: 'Courier New', monospace;
+            white-space: pre-line;
+            font-size: 1rem;
+            line-height: 1.6;
+            color: var(--text-primary);
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .preview-buttons {
+            display: flex;
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+
+        .preview-buttons .btn {
+            flex: 1;
+        }
+
+        .btn-close {
+            background: linear-gradient(135deg, var(--secondary-color) 0%, #475569 100%);
+            color: white;
+        }
+
+        .btn-close:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* Utility classes */
+        .hidden {
+            display: none !important;
+        }
+
+        .printing {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            .header h1 {
+                font-size: 2.5rem;
+            }
+
+            .header p {
+                font-size: 1.1rem;
+            }
+
+            .main-card {
+                padding: 2rem;
+                margin: 0.5rem;
+            }
+
+            .settings-btn {
+                width: 48px;
+                height: 48px;
+                font-size: 1.1rem;
+                top: 1rem;
+                right: 1rem;
+            }
+
+            .quotation-input {
+                font-size: 1.3rem;
+                max-width: 280px;
+            }
+
+            .party-info {
+                padding: 1.5rem;
+                min-height: 140px;
+            }
+
+            .party-name {
+                font-size: 1.2rem;
+            }
+
+            .modal-content {
+                width: 95%;
+                margin: 5% auto;
+                padding: 2rem;
+            }
+
+            .preview-content {
+                width: 95%;
+                margin: 10% auto;
+                padding: 2rem;
+            }
+
+            .btn-group {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .btn-group .btn {
+                max-width: 300px;
+                width: 100%;
+            }
+
+            .form-group input.template-path {
+                width: 100%;
+                margin-bottom: 0.5rem;
+            }
+
+            .refresh-btn {
+                margin-left: 0;
+                width: 100%;
+            }
+
+            .preview-buttons {
+                flex-direction: column;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .header p {
+                font-size: 1rem;
+            }
+
+            .main-card {
+                padding: 1.5rem;
+            }
+
+            .quotation-input {
+                font-size: 1.2rem;
+                max-width: 260px;
+            }
+
+            .party-info {
+                padding: 1.25rem;
+                min-height: 120px;
+            }
+
+            .party-name {
+                font-size: 1.1rem;
+            }
+
+            .modal-content {
+                padding: 1.5rem;
+            }
+
+            .preview-content {
+                padding: 1.5rem;
+            }
+
+            .btn {
+                font-size: 1rem;
+                padding: 0.875rem 1.5rem;
+            }
+        }
+
+        /* Large screen optimizations */
+        @media (min-width: 1400px) {
+            .container {
+                padding: 3rem;
+            }
+
+            .main-card {
+                max-width: 800px;
+                padding: 4rem;
+            }
+
+            .header h1 {
+                font-size: 3.5rem;
+            }
+
+            .header p {
+                font-size: 1.3rem;
+            }
+
+            .quotation-input {
+                font-size: 1.8rem;
+                max-width: 350px;
+            }
+
+            .party-info {
+                padding: 2.5rem;
+                min-height: 180px;
+            }
+
+            .modal-content {
+                max-width: 700px;
+                padding: 3rem;
+            }
+
+            .preview-content {
+                max-width: 600px;
+                padding: 3rem;
+            }
+        }
+
+        /* Print styles */
+        @media print {
+            body {
+                background: white;
+                color: black;
+            }
+            
+            .settings-btn,
+            .btn-group,
+            .modal {
+                display: none !important;
+            }
+            
+            .main-card {
+                box-shadow: none;
+                border: 1px solid #ccc;
+            }
+        }
     </style>
 </head>
 <body>
-    <button class="settings-btn" id="settingsBtn">⚙️ Settings</button>
-    
-    <h2>Enter Quotation Number</h2>
-    <input type="text" id="quotation" placeholder="Enter quotation number" autofocus autocomplete="off">
-    <div id="party"></div>
-    <button id="previewBtn" class="preview-btn hidden">👁️ Preview Label</button>
-    <button id="printBtn" class="hidden">Print Label</button>
-    <div id="printStatus" class="print-status hidden">🖨️ Printing on server...</div>
-    
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>📦 Label Print Server</h1>
+            <p>Professional label printing for warehouse operations</p>
+        </div>
+
+        <!-- Main Card -->
+        <div class="main-card">
+            <!-- Settings Button -->
+            <button class="settings-btn" id="settingsBtn" title="Settings">⚙️</button>
+            
+            <!-- Quotation Input Section -->
+            <div class="quotation-section">
+                <h2>Enter Quotation Number</h2>
+                <div class="input-wrapper">
+                    <input type="text" 
+                           id="quotation" 
+                           class="quotation-input"
+                           placeholder="Q12345" 
+                           autofocus 
+                           autocomplete="off">
+                </div>
+            </div>
+
+            <!-- Party Information Display -->
+            <div id="party" class="party-info">
+                <div class="party-placeholder">
+                    Enter quotation number to view customer details
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="btn-group">
+                <button id="previewBtn" class="btn btn-secondary hidden">
+                    👁️ Preview Label
+                </button>
+                <button id="printBtn" class="btn btn-success hidden">
+                    🖨️ Print Label
+                </button>
+            </div>
+
+            <!-- Print Status -->
+            <div id="printStatus" class="print-status hidden">
+                <div class="spinner"></div>
+                Printing on server...
+            </div>
+        </div>
+    </div>
+
     <!-- Settings Modal -->
     <div id="settingsModal" class="modal">
         <div class="modal-content">
             <span class="close">&times;</span>
-            <h3>Database & Printer Settings</h3>
+            <h3>⚙️ System Settings</h3>
+            
             <div class="form-group">
                 <label for="dbServer">Database Server:</label>
-                <input type="text" id="dbServer" placeholder="Server name or IP">
+                <input type="text" id="dbServer" placeholder="Server name or IP address">
             </div>
+            
             <div class="form-group">
                 <label for="dbName">Database Name:</label>
                 <input type="text" id="dbName" placeholder="Database name">
             </div>
+            
             <div class="form-group">
-                <label for="printerSelect">Printer:</label>
+                <label for="printerSelect">Target Printer:</label>
                 <select id="printerSelect">
-                    <option value="">Default Printer</option>
+                    <option value="">Default System Printer</option>
                 </select>
-                <button id="refreshPrinters" class="refresh-btn">🔄 Refresh</button>
+                <button id="refreshPrinters" class="refresh-btn">🔄 Refresh List</button>
             </div>
-            <button class="btn-save" id="saveSettings">Save Settings</button>
+            
+            <div class="form-group">
+                <label for="bartenderTemplate">BarTender Template (.btw file):</label>
+                <input type="text" id="bartenderTemplate" placeholder="C:\Templates\label.btw" class="template-path">
+                <button id="browseTemplate" class="refresh-btn">📁 Browse</button>
+                <small class="help-text">
+                    💡 Leave empty to use simple text printing instead of professional BarTender templates
+                </small>
+            </div>
+            
+            <div class="btn-group">
+                <button class="btn btn-primary" id="saveSettings">💾 Save Settings</button>
+            </div>
+            
             <div id="statusMsg" class="status-msg hidden"></div>
         </div>
     </div>
@@ -78,36 +845,48 @@
     <div id="previewModal" class="preview-modal">
         <div class="preview-content">
             <span class="close" id="previewClose">&times;</span>
-            <h3>Label Preview</h3>
+            <h3>📄 Label Preview</h3>
             <div id="previewText" class="preview-text"></div>
             <div class="preview-buttons">
-                <button id="printFromPreview" class="btn-save">🖨️ Print This Label</button>
-                <button id="closePreview" class="btn-close">Close</button>
+                <button id="printFromPreview" class="btn btn-success">
+                    🖨️ Print This Label
+                </button>
+                <button id="closePreview" class="btn btn-close">
+                    ❌ Close
+                </button>
             </div>
         </div>
     </div>
+
     <script>
         let currentPartyData = null;
-        let currentQuotation = "";
+        let lastPrintedQuotation = null;
+        let justPrinted = false;
 
-        // Settings modal functionality
+        // DOM element references
+        const quotationInput = document.getElementById('quotation');
+        const partyDiv = document.getElementById('party');
+        const previewBtn = document.getElementById('previewBtn');
+        const printBtn = document.getElementById('printBtn');
+        const printStatus = document.getElementById('printStatus');
+        
+        // Modal elements
         const modal = document.getElementById('settingsModal');
         const settingsBtn = document.getElementById('settingsBtn');
         const closeBtn = document.getElementsByClassName('close')[0];
         const saveBtn = document.getElementById('saveSettings');
         const refreshPrintersBtn = document.getElementById('refreshPrinters');
+        const browseTemplateBtn = document.getElementById('browseTemplate');
 
-        // Preview modal functionality
+        // Preview modal elements
         const previewModal = document.getElementById('previewModal');
-        const previewBtn = document.getElementById('previewBtn');
         const previewClose = document.getElementById('previewClose');
         const closePreviewBtn = document.getElementById('closePreview');
         const printFromPreviewBtn = document.getElementById('printFromPreview');
 
+        // Settings modal handlers
         settingsBtn.onclick = async function() {
-            // Load settings first to get current printer
             await loadCurrentSettings();
-            // Then load printers and apply the selection
             await loadPrinters();
             modal.style.display = 'block';
         }
@@ -126,12 +905,28 @@
         }
 
         refreshPrintersBtn.onclick = async function() {
-            // Store current selection before refreshing
             const printerSelect = document.getElementById('printerSelect');
             window.currentPrinterSetting = printerSelect.value;
             console.log('Refreshing printers, preserving selection:', window.currentPrinterSetting);
-            
             await loadPrinters();
+        }
+
+        browseTemplateBtn.onclick = function() {
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.btw';
+            fileInput.style.display = 'none';
+            
+            fileInput.onchange = function() {
+                if (fileInput.files.length > 0) {
+                    const filePath = fileInput.files[0].path || fileInput.value;
+                    document.getElementById('bartenderTemplate').value = filePath;
+                }
+            };
+            
+            document.body.appendChild(fileInput);
+            fileInput.click();
+            document.body.removeChild(fileInput);
         }
 
         // Preview modal handlers
@@ -159,10 +954,11 @@
                 const settings = await res.json();
                 document.getElementById('dbServer').value = settings.server || '';
                 document.getElementById('dbName').value = settings.database || '';
+                document.getElementById('bartenderTemplate').value = settings.bartender_template || '';
                 
-                // Store the current printer setting to apply after printers are loaded
                 window.currentPrinterSetting = settings.printer || '';
                 console.log('Current printer setting:', window.currentPrinterSetting);
+                console.log('Current BarTender template:', settings.bartender_template);
                 
             } catch (error) {
                 console.error('Error loading settings:', error);
@@ -176,10 +972,8 @@
                 const data = await res.json();
                 const printerSelect = document.getElementById('printerSelect');
                 
-                // Clear existing options except default
-                printerSelect.innerHTML = '<option value="">Default Printer</option>';
+                printerSelect.innerHTML = '<option value="">Default System Printer</option>';
                 
-                // Add printer options
                 data.printers.forEach(printer => {
                     const option = document.createElement('option');
                     option.value = printer;
@@ -187,54 +981,21 @@
                     printerSelect.appendChild(option);
                 });
                 
-                // Set the selected printer to the current hardcoded printer
                 if (window.currentPrinterSetting) {
                     printerSelect.value = window.currentPrinterSetting;
                     console.log('Set printer selection to hardcoded printer:', window.currentPrinterSetting);
                     
-                    // Verify the selection was successful
                     if (printerSelect.value === window.currentPrinterSetting) {
                         console.log('✓ Hardcoded printer successfully selected in dropdown');
                     } else {
                         console.warn('⚠️ Hardcoded printer not found in available printers list');
                     }
                 } else {
-                    console.log('No hardcoded printer - using default selection');
+                    console.log('No hardcoded printer setting found');
                 }
                 
-                console.log('Loaded printers:', data.printers);
             } catch (error) {
                 console.error('Error loading printers:', error);
-                showStatus('Failed to load printers: ' + error.message, 'error');
-            }
-        }
-
-        // Show label preview
-        async function showLabelPreview() {
-            const printData = {
-                quotation: currentQuotation,
-                party: currentPartyData.party,
-                address: currentPartyData.address || '',
-                phone: currentPartyData.phone || '',
-                mobile: currentPartyData.mobile || ''
-            };
-            
-            try {
-                const res = await fetch('/preview-label', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(printData)
-                });
-                
-                const data = await res.json();
-                if (data.status === 'success') {
-                    document.getElementById('previewText').textContent = data.preview;
-                    previewModal.style.display = 'block';
-                } else {
-                    alert('Failed to generate preview: ' + data.message);
-                }
-            } catch (error) {
-                alert('Error generating preview: ' + error.message);
             }
         }
 
@@ -243,6 +1004,7 @@
             const server = document.getElementById('dbServer').value;
             const database = document.getElementById('dbName').value;
             const printer = document.getElementById('printerSelect').value;
+            const bartenderTemplate = document.getElementById('bartenderTemplate').value;
             
             if (!server || !database) {
                 showStatus('Please fill in both server and database name.', 'error');
@@ -256,7 +1018,8 @@
                     body: JSON.stringify({ 
                         server: server, 
                         database: database,
-                        printer: printer 
+                        printer: printer,
+                        bartender_template: bartenderTemplate
                     })
                 });
                 
@@ -264,19 +1027,27 @@
                 if (result.success) {
                     let printerMsg = '';
                     if (printer) {
-                        printerMsg = ` Printer HARDCODED to: ${printer}`;
+                        printerMsg = ` | Printer: ${printer} (HARDCODED)`;
                     } else {
-                        printerMsg = ' Printer: Default (no hardcoding)';
+                        printerMsg = ' | Printer: Default (no hardcoding)';
                     }
-                    showStatus('Settings saved successfully!' + printerMsg, 'success');
+                    
+                    let templateMsg = '';
+                    if (bartenderTemplate) {
+                        templateMsg = ` | BarTender: Professional templates enabled`;
+                    } else {
+                        templateMsg = ' | Printing: Simple text mode';
+                    }
+                    
+                    showStatus('✅ Settings saved successfully!' + printerMsg + templateMsg, 'success');
                     setTimeout(() => {
                         modal.style.display = 'none';
-                    }, 2000);
+                    }, 2500);
                 } else {
-                    showStatus('Error saving settings: ' + result.error, 'error');
+                    showStatus('❌ Error saving settings: ' + result.error, 'error');
                 }
             } catch (error) {
-                showStatus('Error saving settings: ' + error.message, 'error');
+                showStatus('❌ Error saving settings: ' + error.message, 'error');
             }
         }
 
@@ -284,101 +1055,213 @@
             const statusMsg = document.getElementById('statusMsg');
             statusMsg.innerHTML = message;
             statusMsg.className = 'status-msg ' + type;
-            statusMsg.classList.remove('hidden');
+            statusMsg.style.display = 'block';
             
-            if (type === 'success') {
-                setTimeout(() => {
-                    statusMsg.classList.add('hidden');
-                }, 3000);
-            }
+            setTimeout(() => {
+                statusMsg.style.display = 'none';
+            }, 5000);
         }
 
-        // Main application logic
-        document.getElementById('quotation').addEventListener('input', async function(e) {
-            const val = e.target.value;
-            if (val.length > 0) {
-                const res = await fetch('/lookup', {
+        // Quotation lookup with debouncing
+        let lookupTimeout;
+        
+        // Simple and reliable: detect when user starts typing after a print
+        quotationInput.addEventListener('keydown', function(e) {
+            // If user just printed and types any character (except special keys)
+            if (justPrinted && lastPrintedQuotation && 
+                e.key !== 'Enter' && e.key !== 'Backspace' && e.key !== 'Delete' &&
+                e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown' &&
+                e.key !== 'Home' && e.key !== 'End' && e.key !== 'Tab' && e.key !== 'Shift' && 
+                e.key !== 'Control' && e.key !== 'Alt' && e.key !== 'Meta' &&
+                e.key.length === 1) { // Only printable characters
+                
+                console.log('Detected new quotation input after print. Clearing field.');
+                
+                // Clear the entire field so the new character will be the only one
+                this.value = '';
+                
+                // Reset tracking flags
+                justPrinted = false;
+                lastPrintedQuotation = null;
+                
+                // Clear the party display immediately  
+                partyDiv.innerHTML = '<div class="party-placeholder">Enter quotation number to view customer details</div>';
+                partyDiv.classList.remove('populated');
+                previewBtn.classList.add('hidden');
+                printBtn.classList.add('hidden');
+                currentPartyData = null;
+                
+                // Let the keypress continue to add the new character
+            }
+        });
+        
+        quotationInput.addEventListener('input', function() {
+            clearTimeout(lookupTimeout);
+            lookupTimeout = setTimeout(() => {
+                lookupParty(this.value);
+            }, 300);
+        });
+
+        // Enter key handler
+        quotationInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (currentPartyData) {
+                    printLabel();
+                }
+            }
+        });
+
+        async function lookupParty(quotation) {
+            if (!quotation.trim()) {
+                partyDiv.innerHTML = '<div class="party-placeholder">Enter quotation number to view customer details</div>';
+                partyDiv.classList.remove('populated');
+                previewBtn.classList.add('hidden');
+                printBtn.classList.add('hidden');
+                currentPartyData = null;
+                
+                // Reset print tracking flags when input is cleared
+                justPrinted = false;
+                lastPrintedQuotation = null;
+                return;
+            }
+
+            try {
+                const response = await fetch('/lookup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ quotation: val })
+                    body: JSON.stringify({ quotation: quotation })
                 });
-                const data = await res.json();
-                currentPartyData = data;
-                currentQuotation = val;
+
+                const data = await response.json();
                 
                 if (data.party) {
-                    let displayText = data.party;
-                    if (data.address) displayText += `\n${data.address}`;
-                    if (data.phone) displayText += `\nPhone: ${data.phone}`;
-                    if (data.mobile) displayText += `\nMobile: ${data.mobile}`;
-                    document.getElementById('party').innerText = displayText;
-                    document.getElementById('previewBtn').classList.remove('hidden');
-                    document.getElementById('printBtn').classList.remove('hidden');
+                    currentPartyData = {
+                        quotation: quotation,
+                        party: data.party,
+                        address: data.address || '',
+                        phone: data.phone || '',
+                        mobile: data.mobile || ''
+                    };
+
+                    // If this is a different quotation than the last printed one, reset print flags
+                    if (lastPrintedQuotation && quotation !== lastPrintedQuotation) {
+                        justPrinted = false;
+                        lastPrintedQuotation = null;
+                    }
+
+                    const contactInfo = [];
+                    if (data.phone) contactInfo.push(`📞 ${data.phone}`);
+                    if (data.mobile) contactInfo.push(`📱 ${data.mobile}`);
+                    
+                    partyDiv.innerHTML = `
+                        <div class="party-details">
+                            <div class="party-name">${data.party}</div>
+                            ${data.address ? `<div class="party-address">📍 ${data.address}</div>` : ''}
+                            ${contactInfo.length > 0 ? `<div class="party-contact">${contactInfo.join(' | ')}</div>` : ''}
+                        </div>
+                    `;
+                    partyDiv.classList.add('populated');
+                    previewBtn.classList.remove('hidden');
+                    printBtn.classList.remove('hidden');
                 } else {
-                    document.getElementById('party').innerText = "Not found!";
-                    document.getElementById('previewBtn').classList.add('hidden');
-                    document.getElementById('printBtn').classList.add('hidden');
+                    partyDiv.innerHTML = '<div class="party-placeholder">❌ No customer found for this quotation number</div>';
+                    partyDiv.classList.remove('populated');
+                    previewBtn.classList.add('hidden');
+                    printBtn.classList.add('hidden');
+                    currentPartyData = null;
                 }
-            } else {
-                document.getElementById('party').innerText = "";
-                document.getElementById('previewBtn').classList.add('hidden');
-                document.getElementById('printBtn').classList.add('hidden');
+            } catch (error) {
+                console.error('Lookup error:', error);
+                partyDiv.innerHTML = '<div class="party-placeholder">⚠️ Error looking up customer information</div>';
+                partyDiv.classList.remove('populated');
+                previewBtn.classList.add('hidden');
+                printBtn.classList.add('hidden');
+                currentPartyData = null;
             }
-        });
-
-        document.getElementById('quotation').addEventListener('keydown', function(e) {
-            if (e.key === "Enter" && currentPartyData && currentPartyData.party) {
-                printLabel();
-            }
-        });
-
-        document.getElementById('printBtn').addEventListener('click', printLabel);
-
-        function printLabel() {
-            const printData = {
-                quotation: currentQuotation,
-                party: currentPartyData.party,
-                address: currentPartyData.address || '',
-                phone: currentPartyData.phone || '',
-                mobile: currentPartyData.mobile || ''
-            };
-            
-            console.log('Sending print request to server...');
-            
-            // Show printing status
-            const printBtn = document.getElementById('printBtn');
-            const printStatus = document.getElementById('printStatus');
-            
-            printBtn.classList.add('printing');
-            printBtn.textContent = 'Printing...';
-            printStatus.classList.remove('hidden');
-            
-            fetch('/print', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(printData)
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'printed') {
-                    alert("✅ Label sent to printer successfully!\n(Printing on server)");
-                    console.log('Server confirmed print job sent');
-                } else {
-                    alert("❌ Print failed: " + (data.message || 'Unknown error'));
-                    console.error('Print failed:', data.message);
-                }
-            })
-            .catch(error => {
-                alert("❌ Print request failed: " + error.message);
-                console.error('Print request error:', error);
-            })
-            .finally(() => {
-                // Reset UI
-                printBtn.classList.remove('printing');
-                printBtn.textContent = 'Print Label';
-                printStatus.classList.add('hidden');
-            });
         }
+
+        async function showLabelPreview() {
+            if (!currentPartyData) return;
+
+            try {
+                const response = await fetch('/preview-label', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(currentPartyData)
+                });
+
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    document.getElementById('previewText').textContent = data.preview;
+                    previewModal.style.display = 'block';
+                } else {
+                    alert('❌ Error generating preview: ' + data.message);
+                }
+            } catch (error) {
+                console.error('Preview error:', error);
+                alert('⚠️ Error generating preview');
+            }
+        }
+
+        async function printLabel() {
+            if (!currentPartyData) return;
+
+            printStatus.classList.remove('hidden');
+            printStatus.className = 'print-status printing';
+            printStatus.innerHTML = '<div class="spinner"></div> Printing on server...';
+            
+            document.body.classList.add('printing');
+
+            try {
+                const response = await fetch('/print', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(currentPartyData)
+                });
+
+                const data = await response.json();
+                
+                if (data.status === 'printed') {
+                    printStatus.className = 'print-status success';
+                    printStatus.innerHTML = '✅ ' + data.message;
+                    
+                    // Set flags to track successful print
+                    justPrinted = true;
+                    lastPrintedQuotation = currentPartyData.quotation;
+                } else {
+                    printStatus.className = 'print-status error';
+                    printStatus.innerHTML = '❌ ' + data.message;
+                }
+            } catch (error) {
+                console.error('Print error:', error);
+                printStatus.className = 'print-status error';
+                printStatus.innerHTML = '⚠️ Error sending print job to server';
+            }
+
+            document.body.classList.remove('printing');
+            
+            setTimeout(() => {
+                printStatus.classList.add('hidden');
+            }, 3000);
+        }
+
+        // Print button handler
+        printBtn.onclick = printLabel;
+
+        // Focus management
+        document.addEventListener('DOMContentLoaded', function() {
+            quotationInput.focus();
+        });
+
+        // Prevent accidental page unload
+        window.addEventListener('beforeunload', function(e) {
+            if (quotationInput.value.trim()) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
     </script>
 </body>
 </html>

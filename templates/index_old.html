@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Label Print Station</title>
+    <style>
+        body { font-family: sans-serif; font-size: 2em; text-align: center; margin-top: 2em; }
+        #party { margin-top: 1em; color: blue; font-size: 1.8em; white-space: pre-line; max-width: 80%; margin-left: auto; margin-right: auto; }
+        input[type="text"] { font-size: 2em; padding: 0.5em; width: 6em; }
+        button { font-size: 2em; margin: 1em; }
+        
+        /* Settings styles */
+        .settings-btn { position: absolute; top: 10px; right: 10px; font-size: 1em; padding: 0.5em; }
+        .modal { display: none; position: fixed; z-index: 1; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
+        .modal-content { background-color: white; margin: 5% auto; padding: 20px; border: 1px solid #888; width: 60%; max-width: 500px; border-radius: 10px; }
+        .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover { color: black; }
+        .form-group { margin: 15px 0; text-align: left; }
+        .form-group label { display: block; font-size: 0.8em; margin-bottom: 5px; }
+        .form-group input { width: 100%; padding: 8px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 4px; }
+        .form-group input.template-path { width: 70%; }
+        .form-group small.help-text { display: block; color: #666; margin-top: 5px; font-size: 0.75em; }
+        .form-group select { width: 70%; padding: 8px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 4px; }
+        .refresh-btn { margin-left: 10px; padding: 5px 10px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 4px; background: #f8f9fa; cursor: pointer; }
+        .refresh-btn:hover { background: #e9ecef; }
+        .btn-save { background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em; }
+        .btn-save:hover { background-color: #45a049; }
+        .status-msg { margin-top: 10px; padding: 10px; border-radius: 4px; font-size: 0.8em; }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .hidden { display: none !important; }
+        .printing { opacity: 0.7; pointer-events: none; }
+        .print-status { margin-top: 0.5em; font-size: 1em; color: #666; }
+        
+        /* Label preview styles */
+        .preview-btn { font-size: 1.5em; margin: 0.5em; background: #007bff; color: white; }
+        .preview-modal { display: none; position: fixed; z-index: 2; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.7); }
+        .preview-content { background-color: white; margin: 2% auto; padding: 20px; border: 1px solid #888; width: 80%; max-width: 600px; border-radius: 10px; }
+        .preview-text { font-family: 'Courier New', monospace; white-space: pre-line; background: #f8f9fa; padding: 20px; border: 1px solid #ddd; border-radius: 5px; font-size: 0.9em; }
+        .preview-buttons { text-align: center; margin-top: 20px; }
+        .preview-buttons button { margin: 0 10px; padding: 10px 20px; font-size: 1em; }
+        .btn-close { background: #6c757d; color: white; border: none; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <button class="settings-btn" id="settingsBtn">⚙️ Settings</button>
+    
+    <h2>Enter Quotation Number</h2>
+    <input type="text" id="quotation" placeholder="Enter quotation number" autofocus autocomplete="off">
+    <div id="party"></div>
+    <button id="previewBtn" class="preview-btn hidden">👁️ Preview Label</button>
+    <button id="printBtn" class="hidden">Print Label</button>
+    <div id="printStatus" class="print-status hidden">🖨️ Printing on server...</div>
+    
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>Database & Printer Settings</h3>
+            <div class="form-group">
+                <label for="dbServer">Database Server:</label>
+                <input type="text" id="dbServer" placeholder="Server name or IP">
+            </div>
+            <div class="form-group">
+                <label for="dbName">Database Name:</label>
+                <input type="text" id="dbName" placeholder="Database name">
+            </div>
+            <div class="form-group">
+                <label for="printerSelect">Printer:</label>
+                <select id="printerSelect">
+                    <option value="">Default Printer</option>
+                </select>
+                <button id="refreshPrinters" class="refresh-btn">🔄 Refresh</button>
+            </div>
+            <div class="form-group">
+                <label for="bartenderTemplate">BarTender Template (.btw file):</label>
+                <input type="text" id="bartenderTemplate" placeholder="C:\Templates\label.btw" class="template-path">
+                <button id="browseTemplate" class="refresh-btn">📁 Browse</button>
+                <small class="help-text">
+                    Leave empty to use text printing instead of BarTender
+                </small>
+            </div>
+            <button class="btn-save" id="saveSettings">Save Settings</button>
+            <div id="statusMsg" class="status-msg hidden"></div>
+        </div>
+    </div>
+
+    <!-- Label Preview Modal -->
+    <div id="previewModal" class="preview-modal">
+        <div class="preview-content">
+            <span class="close" id="previewClose">&times;</span>
+            <h3>Label Preview</h3>
+            <div id="previewText" class="preview-text"></div>
+            <div class="preview-buttons">
+                <button id="printFromPreview" class="btn-save">🖨️ Print This Label</button>
+                <button id="closePreview" class="btn-close">Close</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        let currentPartyData = null;
+        let currentQuotation = "";
+
+        // Settings modal functionality
+        const modal = document.getElementById('settingsModal');
+        const settingsBtn = document.getElementById('settingsBtn');
+        const closeBtn = document.getElementsByClassName('close')[0];
+        const saveBtn = document.getElementById('saveSettings');
+        const refreshPrintersBtn = document.getElementById('refreshPrinters');
+        const browseTemplateBtn = document.getElementById('browseTemplate');
+
+        // Preview modal functionality
+        const previewModal = document.getElementById('previewModal');
+        const previewBtn = document.getElementById('previewBtn');
+        const previewClose = document.getElementById('previewClose');
+        const closePreviewBtn = document.getElementById('closePreview');
+        const printFromPreviewBtn = document.getElementById('printFromPreview');
+
+        settingsBtn.onclick = async function() {
+            // Load settings first to get current printer
+            await loadCurrentSettings();
+            // Then load printers and apply the selection
+            await loadPrinters();
+            modal.style.display = 'block';
+        }
+
+        closeBtn.onclick = function() {
+            modal.style.display = 'none';
+        }
+
+        window.onclick = function(event) {
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+            if (event.target == previewModal) {
+                previewModal.style.display = 'none';
+            }
+        }
+
+        refreshPrintersBtn.onclick = async function() {
+            // Store current selection before refreshing
+            const printerSelect = document.getElementById('printerSelect');
+            window.currentPrinterSetting = printerSelect.value;
+            console.log('Refreshing printers, preserving selection:', window.currentPrinterSetting);
+            
+            await loadPrinters();
+        }
+
+        browseTemplateBtn.onclick = function() {
+            // Create a hidden file input for browsing
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.btw'; // BarTender template files
+            fileInput.style.display = 'none';
+            
+            fileInput.onchange = function() {
+                if (fileInput.files.length > 0) {
+                    const filePath = fileInput.files[0].path || fileInput.value;
+                    document.getElementById('bartenderTemplate').value = filePath;
+                }
+            };
+            
+            document.body.appendChild(fileInput);
+            fileInput.click();
+            document.body.removeChild(fileInput);
+        }
+
+        // Preview modal handlers
+        previewBtn.onclick = function() {
+            showLabelPreview();
+        }
+
+        previewClose.onclick = function() {
+            previewModal.style.display = 'none';
+        }
+
+        closePreviewBtn.onclick = function() {
+            previewModal.style.display = 'none';
+        }
+
+        printFromPreviewBtn.onclick = function() {
+            previewModal.style.display = 'none';
+            printLabel();
+        }
+
+        // Load current settings
+        async function loadCurrentSettings() {
+            try {
+                const res = await fetch('/get-settings');
+                const settings = await res.json();
+                document.getElementById('dbServer').value = settings.server || '';
+                document.getElementById('dbName').value = settings.database || '';
+                document.getElementById('bartenderTemplate').value = settings.bartender_template || '';
+                
+                // Store the current printer setting to apply after printers are loaded
+                window.currentPrinterSetting = settings.printer || '';
+                console.log('Current printer setting:', window.currentPrinterSetting);
+                console.log('Current BarTender template:', settings.bartender_template);
+                
+            } catch (error) {
+                console.error('Error loading settings:', error);
+            }
+        }
+
+        // Load available printers
+        async function loadPrinters() {
+            try {
+                const res = await fetch('/get-printers');
+                const data = await res.json();
+                const printerSelect = document.getElementById('printerSelect');
+                
+                // Clear existing options except default
+                printerSelect.innerHTML = '<option value="">Default Printer</option>';
+                
+                // Add printer options
+                data.printers.forEach(printer => {
+                    const option = document.createElement('option');
+                    option.value = printer;
+                    option.textContent = printer;
+                    printerSelect.appendChild(option);
+                });
+                
+                // Set the selected printer to the current hardcoded printer
+                if (window.currentPrinterSetting) {
+                    printerSelect.value = window.currentPrinterSetting;
+                    console.log('Set printer selection to hardcoded printer:', window.currentPrinterSetting);
+                    
+                    // Verify the selection was successful
+                    if (printerSelect.value === window.currentPrinterSetting) {
+                        console.log('✓ Hardcoded printer successfully selected in dropdown');
+                    } else {
+                        console.warn('⚠️ Hardcoded printer not found in available printers list');
+                    }
+                } else {
+                    console.log('No hardcoded printer - using default selection');
+                }
+                
+                console.log('Loaded printers:', data.printers);
+            } catch (error) {
+                console.error('Error loading printers:', error);
+                showStatus('Failed to load printers: ' + error.message, 'error');
+            }
+        }
+
+        // Show label preview
+        async function showLabelPreview() {
+            const printData = {
+                quotation: currentQuotation,
+                party: currentPartyData.party,
+                address: currentPartyData.address || '',
+                phone: currentPartyData.phone || '',
+                mobile: currentPartyData.mobile || ''
+            };
+            
+            try {
+                const res = await fetch('/preview-label', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(printData)
+                });
+                
+                const data = await res.json();
+                if (data.status === 'success') {
+                    document.getElementById('previewText').textContent = data.preview;
+                    previewModal.style.display = 'block';
+                } else {
+                    alert('Failed to generate preview: ' + data.message);
+                }
+            } catch (error) {
+                alert('Error generating preview: ' + error.message);
+            }
+        }
+
+        // Save settings
+        saveBtn.onclick = async function() {
+            const server = document.getElementById('dbServer').value;
+            const database = document.getElementById('dbName').value;
+            const printer = document.getElementById('printerSelect').value;
+            const bartenderTemplate = document.getElementById('bartenderTemplate').value;
+            
+            if (!server || !database) {
+                showStatus('Please fill in both server and database name.', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch('/save-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        server: server, 
+                        database: database,
+                        printer: printer,
+                        bartender_template: bartenderTemplate
+                    })
+                });
+                
+                const result = await res.json();
+                if (result.success) {
+                    let printerMsg = '';
+                    if (printer) {
+                        printerMsg = ` Printer HARDCODED to: ${printer}`;
+                    } else {
+                        printerMsg = ' Printer: Default (no hardcoding)';
+                    }
+                    
+                    let templateMsg = '';
+                    if (bartenderTemplate) {
+                        templateMsg = ` BarTender Template: ${bartenderTemplate}`;
+                    } else {
+                        templateMsg = ' Using text printing (no BarTender)';
+                    }
+                    
+                    showStatus('Settings saved successfully!' + printerMsg + templateMsg, 'success');
+                    setTimeout(() => {
+                        modal.style.display = 'none';
+                    }, 2000);
+                } else {
+                    showStatus('Error saving settings: ' + result.error, 'error');
+                }
+            } catch (error) {
+                showStatus('Error saving settings: ' + error.message, 'error');
+            }
+        }
+
+        function showStatus(message, type) {
+            const statusMsg = document.getElementById('statusMsg');
+            statusMsg.innerHTML = message;
+            statusMsg.className = 'status-msg ' + type;
+            statusMsg.classList.remove('hidden');
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusMsg.classList.add('hidden');
+                }, 3000);
+            }
+        }
+
+        // Main application logic
+        document.getElementById('quotation').addEventListener('input', async function(e) {
+            const val = e.target.value;
+            if (val.length > 0) {
+                const res = await fetch('/lookup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ quotation: val })
+                });
+                const data = await res.json();
+                currentPartyData = data;
+                currentQuotation = val;
+                
+                if (data.party) {
+                    let displayText = data.party;
+                    if (data.address) displayText += `\n${data.address}`;
+                    if (data.phone) displayText += `\nPhone: ${data.phone}`;
+                    if (data.mobile) displayText += `\nMobile: ${data.mobile}`;
+                    document.getElementById('party').innerText = displayText;
+                    document.getElementById('previewBtn').classList.remove('hidden');
+                    document.getElementById('printBtn').classList.remove('hidden');
+                } else {
+                    document.getElementById('party').innerText = "Not found!";
+                    document.getElementById('previewBtn').classList.add('hidden');
+                    document.getElementById('printBtn').classList.add('hidden');
+                }
+            } else {
+                document.getElementById('party').innerText = "";
+                document.getElementById('previewBtn').classList.add('hidden');
+                document.getElementById('printBtn').classList.add('hidden');
+            }
+        });
+
+        document.getElementById('quotation').addEventListener('keydown', function(e) {
+            if (e.key === "Enter" && currentPartyData && currentPartyData.party) {
+                printLabel();
+            }
+        });
+
+        document.getElementById('printBtn').addEventListener('click', printLabel);
+
+        function printLabel() {
+            const printData = {
+                quotation: currentQuotation,
+                party: currentPartyData.party,
+                address: currentPartyData.address || '',
+                phone: currentPartyData.phone || '',
+                mobile: currentPartyData.mobile || ''
+            };
+            
+            console.log('Sending print request to server...');
+            
+            // Show printing status
+            const printBtn = document.getElementById('printBtn');
+            const printStatus = document.getElementById('printStatus');
+            
+            printBtn.classList.add('printing');
+            printBtn.textContent = 'Printing...';
+            printStatus.classList.remove('hidden');
+            
+            fetch('/print', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(printData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'printed') {
+                    alert("✅ Label sent to printer successfully!\n(Printing on server)");
+                    console.log('Server confirmed print job sent');
+                } else {
+                    alert("❌ Print failed: " + (data.message || 'Unknown error'));
+                    console.error('Print failed:', data.message);
+                }
+            })
+            .catch(error => {
+                alert("❌ Print request failed: " + error.message);
+                console.error('Print request error:', error);
+            })
+            .finally(() => {
+                // Reset UI
+                printBtn.classList.remove('printing');
+                printBtn.textContent = 'Print Label';
+                printStatus.classList.add('hidden');
+            });
+        }
+    </script>
+</body>
+</html>
