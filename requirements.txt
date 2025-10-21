@@ -2,3 +2,7 @@ Flask
 pyodbc
 python-dotenv
 pywin32
+pystray
+Pillow
+requests
+waitress

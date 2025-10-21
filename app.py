@@ -1,6 +1,10 @@
 import os
 import tempfile
 import json
+import logging
+import sys
+import threading
+from logging.handlers import RotatingFileHandler
 from flask import Flask, render_template, request, jsonify
 import pyodbc
 import subprocess
@@ -8,6 +12,44 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
+
+# Configure logging for service mode
+def setup_logging():
+    """Setup logging for both console and file output"""
+    # Create logs directory if it doesn't exist
+    log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Configure Flask app logging
+    if not app.debug:
+        # File logging with rotation
+        file_handler = RotatingFileHandler(
+            os.path.join(log_dir, 'label_print_server.log'),
+            maxBytes=1024 * 1024 * 10,  # 10MB
+            backupCount=5
+        )
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+        ))
+        
+        # Console logging with proper encoding
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s'
+        ))
+        
+        # Add handlers to Flask logger
+        app.logger.addHandler(file_handler)
+        app.logger.addHandler(console_handler)
+        app.logger.setLevel(logging.INFO)
+        
+        # Log startup
+        app.logger.info('Label Print Server starting up')
+
+# Setup logging
+setup_logging()
 
 # Global variables for database settings
 DB_SERVER = os.environ.get('DB_SERVER')
@@ -91,18 +133,43 @@ def save_db_settings(server, database, printer=None, bartender_template=None):
 load_db_settings()
 
 # Log startup configuration
-print("="*50)
-print("LABEL PRINT SERVER STARTUP")
-print("="*50)
-print(f"Database Server: {DB_SERVER}")
-print(f"Database Name: {DB_NAME}")
+startup_msg = [
+    "="*50,
+    "LABEL PRINT SERVER STARTUP", 
+    "="*50,
+    f"Database Server: {DB_SERVER}",
+    f"Database Name: {DB_NAME}"
+]
+
 if SELECTED_PRINTER:
-    print(f"HARDCODED Printer: {SELECTED_PRINTER}")
-    print("  → All print jobs will go to this specific printer")
+    startup_msg.extend([
+        f"HARDCODED Printer: {SELECTED_PRINTER}",
+        "  -> All print jobs will go to this specific printer"
+    ])
 else:
-    print("Printer: Default System Printer")
-    print("  → Will use system default printer")
-print("="*50)
+    startup_msg.extend([
+        "Printer: Default System Printer",
+        "  -> Will use system default printer"
+    ])
+
+if BARTENDER_TEMPLATE:
+    startup_msg.append(f"BarTender Template: {BARTENDER_TEMPLATE}")
+else:
+    startup_msg.append("BarTender: Not configured (using text printing)")
+
+startup_msg.append("="*50)
+
+# Print to console and log
+for line in startup_msg:
+    print(line)
+    # Only log to file, avoid console encoding issues in service mode
+    if hasattr(app, 'logger') and app.logger.handlers:
+        # Log only to file handlers, not console
+        for handler in app.logger.handlers:
+            if isinstance(handler, RotatingFileHandler):
+                handler.emit(app.logger.makeRecord(
+                    app.logger.name, logging.INFO, __file__, 0, line, (), None
+                ))
 
 def get_party_info(quotation_number):
     # Format quotation number as 25-character string with 'G-' prefix, right-aligned
@@ -622,7 +689,102 @@ def save_settings():
             return jsonify({'success': False, 'error': 'Failed to save settings'})
             
     except Exception as e:
-        return jsonify({'success': False, 'error': f'Database connection failed: {str(e)}'})
+            return jsonify({'success': False, 'error': f'Database connection failed: {str(e)}'})
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """Shutdown the server"""
+    # Try the Werkzeug shutdown first (works when running via flask run)
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func:
+        func()
+        return 'Server shutting down...'
+
+    # When not running under Werkzeug (e.g., waitress), accept token-authenticated
+    # shutdown requests similar to /control for backwards compatibility.
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        data = {}
+
+    token = data.get('token')
+    token_file = os.path.join(os.path.dirname(__file__), '.tray_control_token')
+    expected = None
+    if os.path.exists(token_file):
+        try:
+            with open(token_file, 'r') as f:
+                expected = f.read().strip()
+        except Exception:
+            expected = None
+
+    if token and expected and token == expected:
+        # schedule delayed exit (so client gets response)
+        def delayed_exit():
+            import time
+            time.sleep(0.25)
+            os._exit(0)
+
+        t = threading.Thread(target=delayed_exit, daemon=True)
+        t.start()
+        try:
+            os.remove(token_file)
+        except Exception:
+            pass
+        return 'Server shutting down (via control token)'
+
+    # If we get here, Werkzeug wasn't available and token auth failed
+    return jsonify({'success': False, 'error': 'Not running with the Werkzeug Server; use /control or provide token'}), 500
+
+
+@app.route('/control', methods=['POST'])
+def control():
+    """Internal control endpoint for tray GUI. Expects JSON {action: 'stop', token: '...'}"""
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return jsonify({'success': False, 'error': 'Invalid JSON'}), 400
+
+    action = data.get('action')
+    token = data.get('token')
+
+    # check token file
+    token_file = os.path.join(os.path.dirname(__file__), '.tray_control_token')
+    expected = None
+    if os.path.exists(token_file):
+        try:
+            with open(token_file, 'r') as f:
+                expected = f.read().strip()
+        except Exception:
+            expected = None
+
+    if token != expected:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+    if action == 'stop':
+        # Use a background thread to exit after returning a response so the HTTP client
+        # receives the reply instead of having the connection reset immediately.
+        print('Control: stop action received, scheduling process exit')
+        try:
+            os.remove(token_file)
+        except Exception:
+            pass
+
+        def delayed_exit():
+            import time
+            time.sleep(0.25)
+            os._exit(0)
+
+        t = threading.Thread(target=delayed_exit, daemon=True)
+        t.start()
+        return jsonify({'success': True, 'message': 'Server will stop shortly'})
+
+    return jsonify({'success': False, 'error': 'Unknown action'}), 400
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # This will run when called directly (not as a service)
+    print("Starting Label Print Server in development mode...")
+    print("For production deployment, use the Windows service:")
+    print("  python service.py install")
+    print("  python service.py start")
+    print("")
+    app.run(host='0.0.0.0', port=5000, debug=True)

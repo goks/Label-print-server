@@ -2,3 +2,7 @@
 .env
 config.ini
 db_settings.json
+*.pyc
+*.log
+__pycache__/
+.venv/
