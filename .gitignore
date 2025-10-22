@@ -7,3 +7,7 @@ db_settings.json
 *.db
 __pycache__/
 .venv/
+.gui_running
+.tray_running,
+.tray_control_token
+.tray_start_signal

@@ -37,42 +37,60 @@ window = None
 status_label = None
 hwnd = None
 gui_proc = None
-mutex_handle = None
 
 # Token file for local control requests from GUI process
 CONTROL_TOKEN_FILE = os.path.join(os.path.dirname(__file__), '.tray_control_token')
 
 # Single instance check
-MUTEX_NAME = "LabelPrintServerTrayApp"
+def check_single_instance():
+    """Check if another instance is already running"""
+    tray_running_file = os.path.join(os.path.dirname(__file__), '.tray_running')
+    
+    if os.path.exists(tray_running_file):
+        try:
+            with open(tray_running_file, 'r') as f:
+                existing_pid = f.read().strip()
+            
+            # Check if the process with that PID is still running
+            try:
+                existing_pid = int(existing_pid)
+                # Try to get process info (this will fail if process doesn't exist)
+                if os.name == 'nt':  # Windows
+                    import ctypes
+                    handle = ctypes.windll.kernel32.OpenProcess(0x400, False, existing_pid)  # PROCESS_QUERY_INFORMATION
+                    if handle:
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                        return False  # Process exists, another instance is running
+                else:
+                    # For non-Windows (though this is a Windows app)
+                    os.kill(existing_pid, 0)
+                    return False  # Process exists
+            except (OSError, ValueError):
+                # Process doesn't exist, remove stale file
+                try:
+                    os.remove(tray_running_file)
+                except OSError:
+                    pass
+        except Exception:
+            # Error reading file, assume it's stale
+            try:
+                os.remove(tray_running_file)
+            except OSError:
+                pass
+    
+    return True  # No other instance running
 
 def cleanup_tray():
     """Clean up tray icon and resources"""
-    global hwnd, mutex_handle
+    global hwnd
     try:
         if hwnd:
             win32gui.Shell_NotifyIcon(NIM_DELETE, (hwnd, TRAY_ICON_ID, 0, 0, 0, ""))
             print("Tray icon removed")
     except Exception as e:
         print(f"Error removing tray icon: {e}")
-    
-    try:
-        if mutex_handle:
-            win32api.CloseHandle(mutex_handle)
-    except Exception as e:
-        print(f"Error closing mutex: {e}")
 
-def check_single_instance():
-    """Ensure only one instance of tray app is running"""
-    global mutex_handle
-    try:
-        mutex_handle = win32event.CreateMutex(None, True, MUTEX_NAME)
-        if win32api.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            print("Another instance of tray app is already running!")
-            return False
-        return True
-    except Exception as e:
-        print(f"Error checking single instance: {e}")
-        return False
+# Removed old mutex-based single instance check - using file-based approach now
 
 # Tray icon constants
 TRAY_ICON_ID = 1
@@ -576,6 +594,17 @@ def wnd_proc(hwnd, msg, wparam, lparam):
         win32gui.PostQuitMessage(0)
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
+# Check for single instance
+if not check_single_instance():
+    # Another instance is already running
+    root = tk.Tk()
+    root.withdraw()  # Hide the root window
+    messagebox.showwarning("Label Print Server", 
+                          "Another instance of Label Print Server is already running.\n\n"
+                          "Please check your system tray for the existing application.")
+    root.destroy()
+    sys.exit(1)
+
 # Create window class
 wc = win32gui.WNDCLASS()
 wc.lpfnWndProc = wnd_proc
@@ -591,17 +620,25 @@ class_atom = win32gui.RegisterClass(wc)
 hwnd = win32gui.CreateWindow(class_atom, "TrayApp", 0, 0, 0, 0, 0, 0, 0, win32api.GetModuleHandle(None), None)
 
 # Load icon (try loading ICO file; fall back to default app icon on any failure)
-icon_path = os.path.join(os.path.dirname(__file__), "icons", "favicon.ico")
+icon_paths = [
+    os.path.join(os.path.dirname(__file__), "icons", "app_icon.ico"),
+    os.path.join(os.path.dirname(__file__), "icons", "favicon.ico")
+]
+
 hicon = None
-if os.path.exists(icon_path):
-    try:
-        hicon = win32gui.LoadImage(0, icon_path, win32con.IMAGE_ICON, 16, 16, win32con.LR_LOADFROMFILE)
-    except Exception as e:
-        print(f"Warning: LoadImage failed for {icon_path}: {e}")
-        hicon = None
+for icon_path in icon_paths:
+    if os.path.exists(icon_path):
+        try:
+            hicon = win32gui.LoadImage(0, icon_path, win32con.IMAGE_ICON, 16, 16, win32con.LR_LOADFROMFILE)
+            if hicon:
+                print(f"Loaded tray icon from: {icon_path}")
+                break
+        except Exception as e:
+            print(f"Warning: LoadImage failed for {icon_path}: {e}")
 
 if not hicon:
     hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
+    print("Using default system icon for tray")
 
 # Add tray icon
 nid = (hwnd, TRAY_ICON_ID, NIF_ICON | NIF_MESSAGE | NIF_TIP, WM_TRAYICON, hicon, "Label Print Server")

@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 DB_FILE = os.path.join(os.path.dirname(__file__), 'printed_records.db')
 
@@ -31,7 +31,7 @@ def record_print(quotation, party=None, address=None, phone=None, mobile=None):
         cur = conn.cursor()
         cur.execute(
             'INSERT INTO printed (quotation, party, address, phone, mobile, printed_at) VALUES (?, ?, ?, ?, ?, ?)',
-            (str(quotation), party, address, phone, mobile, datetime.utcnow().isoformat())
+            (str(quotation), party, address, phone, mobile, datetime.now().isoformat())
         )
         conn.commit()
         return cur.lastrowid

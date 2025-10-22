@@ -834,6 +834,7 @@
             </div>
             
             <div class="btn-group">
+                <button class="btn btn-secondary" id="testConnection">🔍 Test Connection</button>
                 <button class="btn btn-primary" id="saveSettings">💾 Save Settings</button>
             </div>
             
@@ -875,6 +876,7 @@
         const settingsBtn = document.getElementById('settingsBtn');
         const closeBtn = document.getElementsByClassName('close')[0];
         const saveBtn = document.getElementById('saveSettings');
+        const testConnectionBtn = document.getElementById('testConnection');
         const refreshPrintersBtn = document.getElementById('refreshPrinters');
         const browseTemplateBtn = document.getElementById('browseTemplate');
 
@@ -996,6 +998,65 @@
                 
             } catch (error) {
                 console.error('Error loading printers:', error);
+            }
+        }
+
+        // Test database connection
+        testConnectionBtn.onclick = async function() {
+            const server = document.getElementById('dbServer').value;
+            const database = document.getElementById('dbName').value;
+            
+            if (!server || !database) {
+                showStatus('Please enter server and database name first.', 'error');
+                return;
+            }
+
+            // Show testing status
+            showStatus('Testing database connection...', 'info');
+            testConnectionBtn.disabled = true;
+            testConnectionBtn.textContent = '⏳ Testing...';
+
+            try {
+                const res = await fetch('/test-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        server: server, 
+                        database: database
+                    })
+                });
+                
+                const result = await res.json();
+                
+                if (result.success) {
+                    showStatus(`✅ Connection successful!
+Driver: ${result.driver}
+Server: ${result.version}
+Tables: ${result.tables_found}`, 'success');
+                } else {
+                    let errorMsg = `❌ Connection failed: ${result.error}`;
+                    
+                    if (result.suggestions) {
+                        errorMsg += '\n\nSuggestions:\n';
+                        result.suggestions.forEach(suggestion => {
+                            errorMsg += `• ${suggestion}\n`;
+                        });
+                    }
+                    
+                    if (result.test_results && result.test_results.length > 0) {
+                        errorMsg += '\n\nDriver Test Results:\n';
+                        result.test_results.forEach(test => {
+                            errorMsg += `• ${test.driver}: ${test.error}\n`;
+                        });
+                    }
+                    
+                    showStatus(errorMsg, 'error');
+                }
+            } catch (error) {
+                showStatus(`❌ Test failed: ${error.message}`, 'error');
+            } finally {
+                testConnectionBtn.disabled = false;
+                testConnectionBtn.textContent = '🔍 Test Connection';
             }
         }
 

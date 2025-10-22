@@ -186,15 +186,50 @@ def get_party_info(quotation_number):
     
     print(f"Searching for {formatted_vch_no}")
     
-    conn_str = (
-        f"DRIVER={{SQL Server}};"
-        f"SERVER={DB_SERVER};"
-        f"DATABASE={DB_NAME};"
-        f"Trusted_Connection=yes;"
-        # f"UID={DB_USER};"
-        # f"PWD={DB_PASSWORD}"
-    )
+    # Check if database settings are configured
+    if not DB_SERVER or not DB_NAME:
+        print("Database error: Server or database not configured. Please check settings.")
+        return None
     
+    # Use the most compatible ODBC driver available
+    available_drivers = pyodbc.drivers()
+    driver = None
+    
+    # Prioritize drivers and use appropriate authentication
+    if 'ODBC Driver 18 for SQL Server' in available_drivers:
+        driver = 'ODBC Driver 18 for SQL Server'
+        # ODBC Driver 18 requires specific authentication syntax
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={DB_SERVER};"
+            f"DATABASE={DB_NAME};"
+            f"Trusted_Connection=yes;"
+            f"TrustServerCertificate=yes;"
+            f"Connection Timeout=10;"
+        )
+    elif 'ODBC Driver 17 for SQL Server' in available_drivers:
+        driver = 'ODBC Driver 17 for SQL Server'
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={DB_SERVER};"
+            f"DATABASE={DB_NAME};"
+            f"Integrated Security=SSPI;"
+            f"Connection Timeout=10;"
+        )
+    elif 'SQL Server' in available_drivers:
+        driver = 'SQL Server'
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={DB_SERVER};"
+            f"DATABASE={DB_NAME};"
+            f"Trusted_Connection=yes;"
+            f"Connection Timeout=10;"
+        )
+    else:
+        print("Database error: No SQL Server ODBC drivers found")
+        return None
+    
+    conn = None
     try:
         conn = pyodbc.connect(conn_str)
         cursor = conn.cursor()
@@ -204,7 +239,6 @@ def get_party_info(quotation_number):
         tran_row = cursor.fetchone()
         
         if not tran_row or not tran_row.CM1:
-            conn.close()
             return None
             
         master_code = tran_row.CM1
@@ -215,7 +249,6 @@ def get_party_info(quotation_number):
         master_row = cursor.fetchone()
         
         if not master_row:
-            conn.close()
             return None
             
         shop_name = master_row.Name
@@ -223,8 +256,6 @@ def get_party_info(quotation_number):
         # Step 3: Get address information from MasterAddressInfo table
         cursor.execute("SELECT Address1, Address2, Address3, Address4, Telno, Mobile FROM MasterAddressInfo WHERE MasterCode=?", master_code)
         address_row = cursor.fetchone()
-        
-        conn.close()
         
         # Compile party information
         party_info = {
@@ -240,9 +271,36 @@ def get_party_info(quotation_number):
         
         return party_info
         
-    except Exception as e:
-        print(f"Database error: {e}")
+    except pyodbc.Error as e:
+        error_code = e.args[0] if e.args else 'Unknown'
+        error_msg = e.args[1] if len(e.args) > 1 else str(e)
+        
+        # Provide specific error messages based on error codes
+        if error_code in ['08001', '08S01']:
+            print(f"Database connection error: Cannot reach SQL Server '{DB_SERVER}'. Please check:")
+            print("- Server name is correct")
+            print("- SQL Server is running")
+            print("- Network connectivity")
+            print("- Firewall settings")
+        elif error_code == '18456':
+            print(f"Database authentication error: Access denied to '{DB_NAME}' database")
+        elif error_code == 'IM002':
+            print(f"Database driver error: ODBC driver not found or incompatible")
+        else:
+            print(f"Database error ({error_code}): {error_msg}")
+            
         return None
+        
+    except Exception as e:
+        print(f"Unexpected database error: {e}")
+        return None
+        
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 def format_label(quotation, party_info):
     """Format label with crisp 5-line layout"""
@@ -699,12 +757,35 @@ def save_settings():
     
     # Test the database connection before saving
     try:
-        conn_str = (
-            f"DRIVER={{SQL Server}};"
-            f"SERVER={server};"
-            f"DATABASE={database};"
-            f"Trusted_Connection=yes;"
-        )
+        # Use the same driver selection logic as the main app
+        available_drivers = pyodbc.drivers()
+        
+        if 'ODBC Driver 18 for SQL Server' in available_drivers:
+            conn_str = (
+                f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+                f"SERVER={server};"
+                f"DATABASE={database};"
+                f"Trusted_Connection=yes;"
+                f"TrustServerCertificate=yes;"
+                f"Connection Timeout=10;"
+            )
+        elif 'ODBC Driver 17 for SQL Server' in available_drivers:
+            conn_str = (
+                f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+                f"SERVER={server};"
+                f"DATABASE={database};"
+                f"Integrated Security=SSPI;"
+                f"Connection Timeout=10;"
+            )
+        else:
+            conn_str = (
+                f"DRIVER={{SQL Server}};"
+                f"SERVER={server};"
+                f"DATABASE={database};"
+                f"Trusted_Connection=yes;"
+                f"Connection Timeout=10;"
+            )
+            
         conn = pyodbc.connect(conn_str)
         conn.close()
         
@@ -730,6 +811,198 @@ def save_settings():
             
     except Exception as e:
             return jsonify({'success': False, 'error': f'Database connection failed: {str(e)}'})
+
+@app.route('/test-connection', methods=['POST'])
+def test_connection():
+    """Test database connection with current or provided settings"""
+    data = request.json or {}
+    
+    # Use provided settings or current ones
+    test_server = data.get('server', DB_SERVER)
+    test_database = data.get('database', DB_NAME)
+    
+    if not test_server or not test_database:
+        return jsonify({
+            'success': False, 
+            'error': 'Server and database name are required',
+            'details': 'Please configure database settings first'
+        })
+    
+    # Get available drivers
+    available_drivers = pyodbc.drivers()
+    sql_drivers = [d for d in available_drivers if 'SQL Server' in d]
+    
+    if not sql_drivers:
+        return jsonify({
+            'success': False,
+            'error': 'No SQL Server ODBC drivers found',
+            'details': 'Please install SQL Server ODBC drivers'
+        })
+    
+    # Try multiple drivers in order of preference with correct authentication
+    results = []
+    
+    # Test ODBC Driver 18 for SQL Server (with proper authentication)
+    if 'ODBC Driver 18 for SQL Server' in available_drivers:
+        driver = 'ODBC Driver 18 for SQL Server'
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={test_server};"
+            f"DATABASE={test_database};"
+            f"Trusted_Connection=yes;"
+            f"TrustServerCertificate=yes;"
+            f"Connection Timeout=10;"
+        )
+        
+        try:
+            conn = pyodbc.connect(conn_str)
+            cursor = conn.cursor()
+            
+            # Test basic connectivity
+            cursor.execute("SELECT 1")
+            basic_test = cursor.fetchone()[0] == 1
+            
+            # Test required tables
+            cursor.execute("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_NAME IN ('Tran2', 'Master1', 'MasterAddressInfo')
+            """)
+            table_count = cursor.fetchone()[0]
+            
+            # Get SQL Server version
+            cursor.execute("SELECT @@VERSION")
+            version_info = cursor.fetchone()[0].split('\n')[0]
+            
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'driver': driver,
+                'version': version_info,
+                'tables_found': f"{table_count}/3 required tables",
+                'message': f'Successfully connected using {driver}',
+                'connection_string': conn_str.replace(test_server, '[SERVER]').replace(test_database, '[DATABASE]')
+            })
+            
+        except Exception as e:
+            results.append({
+                'driver': driver,
+                'success': False,
+                'error': str(e)
+            })
+    
+    # Test ODBC Driver 17 for SQL Server
+    if 'ODBC Driver 17 for SQL Server' in available_drivers:
+        driver = 'ODBC Driver 17 for SQL Server'
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={test_server};"
+            f"DATABASE={test_database};"
+            f"Integrated Security=SSPI;"
+            f"Connection Timeout=10;"
+        )
+        
+        try:
+            conn = pyodbc.connect(conn_str)
+            cursor = conn.cursor()
+            
+            # Test basic connectivity
+            cursor.execute("SELECT 1")
+            basic_test = cursor.fetchone()[0] == 1
+            
+            # Test required tables
+            cursor.execute("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_NAME IN ('Tran2', 'Master1', 'MasterAddressInfo')
+            """)
+            table_count = cursor.fetchone()[0]
+            
+            # Get SQL Server version
+            cursor.execute("SELECT @@VERSION")
+            version_info = cursor.fetchone()[0].split('\n')[0]
+            
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'driver': driver,
+                'version': version_info,
+                'tables_found': f"{table_count}/3 required tables",
+                'message': f'Successfully connected using {driver}',
+                'connection_string': conn_str.replace(test_server, '[SERVER]').replace(test_database, '[DATABASE]')
+            })
+            
+        except Exception as e:
+            results.append({
+                'driver': driver,
+                'success': False,
+                'error': str(e)
+            })
+    
+    # Test legacy SQL Server driver
+    if 'SQL Server' in available_drivers:
+        driver = 'SQL Server'
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={test_server};"
+            f"DATABASE={test_database};"
+            f"Trusted_Connection=yes;"
+            f"Connection Timeout=10;"
+        )
+        
+        try:
+            conn = pyodbc.connect(conn_str)
+            cursor = conn.cursor()
+            
+            # Test basic connectivity
+            cursor.execute("SELECT 1")
+            basic_test = cursor.fetchone()[0] == 1
+            
+            # Test required tables
+            cursor.execute("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_NAME IN ('Tran2', 'Master1', 'MasterAddressInfo')
+            """)
+            table_count = cursor.fetchone()[0]
+            
+            # Get SQL Server version
+            cursor.execute("SELECT @@VERSION")
+            version_info = cursor.fetchone()[0].split('\n')[0]
+            
+            conn.close()
+            
+            return jsonify({
+                'success': True,
+                'driver': driver,
+                'version': version_info,
+                'tables_found': f"{table_count}/3 required tables",
+                'message': f'Successfully connected using {driver}',
+                'connection_string': conn_str.replace(test_server, '[SERVER]').replace(test_database, '[DATABASE]')
+            })
+            
+        except Exception as e:
+            error_details = str(e)
+            results.append({
+                'driver': driver,
+                'success': False,
+                'error': error_details
+            })
+    
+    # If all drivers failed, return detailed error information
+    return jsonify({
+        'success': False,
+        'error': f'Unable to connect to SQL Server {test_server}',
+        'available_drivers': sql_drivers,
+        'test_results': results,
+        'suggestions': [
+            'Check if SQL Server is running',
+            'Verify server name is correct',
+            'Ensure SQL Server allows remote connections',
+            'Check Windows Firewall settings',
+            'Try using IP address instead of server name',
+            'Verify your Windows user has database access'
+        ]
+    })
 
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
