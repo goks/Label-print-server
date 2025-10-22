@@ -1,13 +1,230 @@
-# Secrets and config files
+# Label Print Server - Git Ignore File
+
+# ===== ENVIRONMENT & SECRETS =====
+# Never commit environment files with sensitive data
 .env
-config.ini
+.env.local
+.env.production
+.env.*.local
+*.env
+
+# Database connection strings and credentials  
 db_settings.json
-*.pyc
-*.log
-*.db
+db_config.json
+database_credentials.json
+
+# API keys and tokens
+api_keys.json
+tokens.txt
+*.key
+*.pem
+*.p12
+*.pfx
+
+# ===== PYTHON =====
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Tray application runtime files
+.tray_running
+.tray_control_token
+.tray_quit_signal
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
 .venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ===== APPLICATION SPECIFIC =====
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+printed_records.db*
+
+# Log files (keep directory structure but ignore content)
+logs/*.log
+logs/*.log.*
+logs/service_*.log
+*.log
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Backup files
+*.bak
+*.backup
+*~
+*.swp
+*.swo
+
+# Configuration backups
+*.json.bak
+*.ini.bak
+*.cfg.bak
+
+# Runtime state files
+.tray_running
 .gui_running
-.tray_running,
 .tray_control_token
 .tray_start_signal
+.server_pid
+
+# Cache directories
+cache/
+.cache/
+
+# ===== WINDOWS =====
+# Windows thumbnail cache files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+
+# Dump file
+*.stackdump
+
+# Folder config file
+[Dd]esktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# ===== DEVELOPMENT TOOLS =====
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ===== DEPLOYMENT =====
+# Production builds
+build/
+dist/
+
+# Service files (contain sensitive paths)
+service_config.json
+nssm_install.bat
+
+# Deployment scripts with sensitive info
+deploy_prod.bat
+deploy_config.json
+
+# SSL certificates
+*.crt
+*.cert
+certificates/
+
+# ===== TESTING =====
+# Test databases
+test.db
+test_*.db
+*_test.db
+
+# Test logs
+test_logs/
+*_test.log
+
+# Test configuration
+test_config.json
+test.env
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml
+
+# ===== PRINTER & HARDWARE =====
+# Printer spool files
+*.spl
+
+# BarTender files (if containing sensitive templates)
+# *.btw  # Uncomment if templates contain sensitive data
+
+# ===== MONITORING & ANALYTICS =====
+# Performance monitoring data
+monitoring/
+metrics/
+*.metrics
+
+# Health check data (temporary)
+health_*.json
+metrics_*.json
+
+# ===== DIAGNOSTIC FILES (SAFE TO DELETE) =====
+# Diagnostic files (created during troubleshooting)
+comprehensive_db_test.py
+test_db_connection.py
+fix_db_connection.py
+DATABASE_CONNECTION_GUIDE.md
+
+# Icon creation scripts (only needed during setup)
+create_modern_icons.py
+create_shortcut.py
+set_app_icon.py
+refresh_icon_cache.py
+
+# Old/backup HTML templates
+templates/index_old.html
+templates/*.bak

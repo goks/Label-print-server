@@ -1,8 +1,30 @@
-Flask
-pyodbc
-python-dotenv
-pywin32
-pystray
-Pillow
-requests
-waitress
+# Core Flask application
+Flask>=2.3.0
+Werkzeug>=2.3.0
+
+# Database connectivity
+pyodbc>=4.0.35
+
+# Configuration and environment
+python-dotenv>=1.0.0
+
+# Windows integration
+pywin32>=306
+
+# System tray and GUI
+pystray>=0.19.0
+Pillow>=10.0.0
+
+# HTTP client
+requests>=2.31.0
+
+# Production WSGI server
+waitress>=2.1.2
+
+# Security and monitoring
+cryptography>=41.0.0
+
+# Development and debugging (optional)
+# flask-debug-toolbar>=0.13.1
+# pytest>=7.4.0
+# pytest-flask>=1.2.0

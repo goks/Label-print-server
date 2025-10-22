@@ -4,8 +4,12 @@ import json
 import logging
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
-from flask import Flask, render_template, request, jsonify
+import traceback
+import time
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
+from flask import Flask, render_template, request, jsonify, g
+from werkzeug.middleware.proxy_fix import ProxyFix
 import pyodbc
 import subprocess
 from dotenv import load_dotenv
@@ -13,45 +17,184 @@ load_dotenv()
 
 import printed_db
 
-app = Flask(__name__)
+# Production configuration
+class Config:
+    SECRET_KEY = os.environ.get('SECRET_KEY') or os.urandom(32).hex()
+    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max request size
+    DATABASE_CONNECTION_TIMEOUT = 30
+    REQUEST_TIMEOUT = 60
+    LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    ENVIRONMENT = os.environ.get('FLASK_ENV', 'production')
 
-# Configure logging for service mode
-def setup_logging():
-    """Setup logging for both console and file output"""
-    # Create logs directory if it doesn't exist
+app = Flask(__name__)
+app.config.from_object(Config)
+
+# Configure for reverse proxy deployment
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+def setup_comprehensive_logging():
+    """Setup comprehensive production logging with multiple handlers"""
     log_dir = os.path.join(os.path.dirname(__file__), 'logs')
     os.makedirs(log_dir, exist_ok=True)
     
-    # Configure Flask app logging
-    if not app.debug:
-        # File logging with rotation
-        file_handler = RotatingFileHandler(
-            os.path.join(log_dir, 'label_print_server.log'),
-            maxBytes=1024 * 1024 * 10,  # 10MB
-            backupCount=5
-        )
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-        ))
-        
-        # Console logging with proper encoding
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        ))
-        
-        # Add handlers to Flask logger
-        app.logger.addHandler(file_handler)
-        app.logger.addHandler(console_handler)
-        app.logger.setLevel(logging.INFO)
-        
-        # Log startup
-        app.logger.info('Label Print Server starting up')
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, Config.LOG_LEVEL))
+    
+    # Clear existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Create formatters
+    detailed_formatter = logging.Formatter(
+        '%(asctime)s | %(name)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s'
+    )
+    simple_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s'
+    )
+    
+    # 1. Main application log (daily rotation)
+    app_handler = TimedRotatingFileHandler(
+        os.path.join(log_dir, 'label_print_server.log'),
+        when='midnight',
+        interval=1,
+        backupCount=30,
+        encoding='utf-8'
+    )
+    app_handler.setLevel(logging.INFO)
+    app_handler.setFormatter(detailed_formatter)
+    
+    # 2. Error log (separate file for errors only)
+    error_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'errors.log'),
+        maxBytes=50 * 1024 * 1024,  # 50MB
+        backupCount=10,
+        encoding='utf-8'
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(detailed_formatter)
+    
+    # 3. Database operations log
+    db_handler = TimedRotatingFileHandler(
+        os.path.join(log_dir, 'database.log'),
+        when='midnight',
+        interval=1,
+        backupCount=14,
+        encoding='utf-8'
+    )
+    db_handler.setLevel(logging.DEBUG)
+    db_handler.setFormatter(detailed_formatter)
+    
+    # 4. Security/Access log
+    access_handler = TimedRotatingFileHandler(
+        os.path.join(log_dir, 'access.log'),
+        when='midnight',
+        interval=1,
+        backupCount=90,
+        encoding='utf-8'
+    )
+    access_handler.setLevel(logging.INFO)
+    access_handler.setFormatter(logging.Formatter(
+        '%(asctime)s | %(message)s'
+    ))
+    
+    # 5. Console handler for production monitoring
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.WARNING)  # Only warnings and above to console
+    console_handler.setFormatter(simple_formatter)
+    
+    # Add handlers to loggers
+    app.logger.addHandler(app_handler)
+    app.logger.addHandler(error_handler)
+    app.logger.addHandler(console_handler)
+    app.logger.setLevel(logging.INFO)
+    
+    # Create specialized loggers
+    db_logger = logging.getLogger('database')
+    db_logger.addHandler(db_handler)
+    db_logger.setLevel(logging.DEBUG)
+    
+    access_logger = logging.getLogger('access')
+    access_logger.addHandler(access_handler)
+    access_logger.setLevel(logging.INFO)
+    
+    # Suppress noisy third-party loggers
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    
+    return db_logger, access_logger
 
 # Setup logging
-setup_logging()
+db_logger, access_logger = setup_comprehensive_logging()
+app.logger.info('Label Print Server starting up in %s mode', Config.ENVIRONMENT)
+
+# Production middleware and error handling
+@app.before_request
+def before_request():
+    """Log request and set up request context"""
+    g.start_time = time.time()
+    g.request_id = os.urandom(8).hex()
+    
+    # Log incoming request (excluding static files)
+    if not request.endpoint or not request.endpoint.startswith('static'):
+        access_logger.info(
+            'Request %s: %s %s from %s - User-Agent: %s',
+            g.request_id,
+            request.method,
+            request.url,
+            request.remote_addr,
+            request.headers.get('User-Agent', 'Unknown')
+        )
+
+@app.after_request
+def after_request(response):
+    """Log response and performance metrics"""
+    if hasattr(g, 'start_time'):
+        duration = round((time.time() - g.start_time) * 1000, 2)  # milliseconds
+        
+        # Log response (excluding static files)
+        if not request.endpoint or not request.endpoint.startswith('static'):
+            access_logger.info(
+                'Response %s: %s %s - Status: %d - Duration: %sms - Size: %s bytes',
+                g.request_id,
+                request.method,
+                request.url,
+                response.status_code,
+                duration,
+                response.content_length or 0
+            )
+            
+            # Log slow requests as warnings
+            if duration > 5000:  # 5 seconds
+                app.logger.warning(
+                    'SLOW REQUEST: %s %s took %sms',
+                    request.method,
+                    request.url,
+                    duration
+                )
+    
+    # Security headers
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    
+    return response
+
+@app.errorhandler(404)
+def not_found_error(error):
+    app.logger.warning('404 error: %s requested %s', request.remote_addr, request.url)
+    return jsonify({'error': 'Not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    app.logger.error('500 error on %s: %s', request.url, str(error), exc_info=True)
+    return jsonify({'error': 'Internal server error'}), 500
+
+@app.errorhandler(Exception)
+def unhandled_exception(error):
+    app.logger.error('Unhandled exception: %s', str(error), exc_info=True)
+    return jsonify({'error': 'An unexpected error occurred'}), 500
 
 # Global variables for database settings
 DB_SERVER = os.environ.get('DB_SERVER')
@@ -181,19 +324,24 @@ for line in startup_msg:
                 ))
 
 def get_party_info(quotation_number):
+    """Look up customer information from database with comprehensive logging"""
+    start_time = time.time()
+    
     # Format quotation number as 25-character string with 'G-' prefix, right-aligned
     formatted_vch_no = f"G-{quotation_number}".rjust(25)
     
-    print(f"Searching for {formatted_vch_no}")
+    db_logger.info('Database lookup started: quotation=%s, formatted=%s', quotation_number, formatted_vch_no)
     
     # Check if database settings are configured
     if not DB_SERVER or not DB_NAME:
-        print("Database error: Server or database not configured. Please check settings.")
+        db_logger.error('Database configuration missing: server=%s, database=%s', DB_SERVER, DB_NAME)
         return None
     
     # Use the most compatible ODBC driver available
     available_drivers = pyodbc.drivers()
     driver = None
+    
+    db_logger.debug('Available ODBC drivers: %s', available_drivers)
     
     # Prioritize drivers and use appropriate authentication
     if 'ODBC Driver 18 for SQL Server' in available_drivers:
@@ -205,7 +353,7 @@ def get_party_info(quotation_number):
             f"DATABASE={DB_NAME};"
             f"Trusted_Connection=yes;"
             f"TrustServerCertificate=yes;"
-            f"Connection Timeout=10;"
+            f"Connection Timeout={Config.DATABASE_CONNECTION_TIMEOUT};"
         )
     elif 'ODBC Driver 17 for SQL Server' in available_drivers:
         driver = 'ODBC Driver 17 for SQL Server'
@@ -214,7 +362,7 @@ def get_party_info(quotation_number):
             f"SERVER={DB_SERVER};"
             f"DATABASE={DB_NAME};"
             f"Integrated Security=SSPI;"
-            f"Connection Timeout=10;"
+            f"Connection Timeout={Config.DATABASE_CONNECTION_TIMEOUT};"
         )
     elif 'SQL Server' in available_drivers:
         driver = 'SQL Server'
@@ -223,39 +371,60 @@ def get_party_info(quotation_number):
             f"SERVER={DB_SERVER};"
             f"DATABASE={DB_NAME};"
             f"Trusted_Connection=yes;"
-            f"Connection Timeout=10;"
+            f"Connection Timeout={Config.DATABASE_CONNECTION_TIMEOUT};"
         )
     else:
-        print("Database error: No SQL Server ODBC drivers found")
+        db_logger.error('No SQL Server ODBC drivers found. Available drivers: %s', available_drivers)
         return None
+    
+    db_logger.debug('Using driver: %s', driver)
     
     conn = None
     try:
+        connection_start = time.time()
         conn = pyodbc.connect(conn_str)
+        connection_time = time.time() - connection_start
+        db_logger.debug('Database connection established in %.2f seconds', connection_time)
         cursor = conn.cursor()
         
         # Step 1: Get MasterCode from Tran2 table
-        cursor.execute("SELECT CM1 FROM dbo.Tran2 WHERE VchType='26' AND MasterCode2='201' AND VchNo=?", formatted_vch_no)
+        query_start = time.time()
+        query1 = "SELECT CM1 FROM dbo.Tran2 WHERE VchType='26' AND MasterCode2='201' AND VchNo=?"
+        db_logger.debug('Executing query 1: %s with parameter: %s', query1, formatted_vch_no)
+        cursor.execute(query1, formatted_vch_no)
         tran_row = cursor.fetchone()
+        query1_time = time.time() - query_start
         
         if not tran_row or not tran_row.CM1:
+            db_logger.info('No quotation found for %s (query completed in %.2fs)', quotation_number, query1_time)
             return None
             
         master_code = tran_row.CM1
-        # print(f"Mastercode {master_code}")
+        db_logger.debug('Found master code: %s (query completed in %.2fs)', master_code, query1_time)
         
         # Step 2: Get shop name from Master1 table
-        cursor.execute("SELECT Name, Code FROM Master1 WHERE MasterType=2 AND Code=?", master_code)
+        query_start = time.time()
+        query2 = "SELECT Name, Code FROM Master1 WHERE MasterType=2 AND Code=?"
+        db_logger.debug('Executing query 2: %s with parameter: %s', query2, master_code)
+        cursor.execute(query2, master_code)
         master_row = cursor.fetchone()
+        query2_time = time.time() - query_start
         
         if not master_row:
+            db_logger.warning('No customer found for master code %s (query completed in %.2fs)', master_code, query2_time)
             return None
             
         shop_name = master_row.Name
+        db_logger.debug('Found shop name: %s (query completed in %.2fs)', shop_name, query2_time)
         
         # Step 3: Get address information from MasterAddressInfo table
-        cursor.execute("SELECT Address1, Address2, Address3, Address4, Telno, Mobile FROM MasterAddressInfo WHERE MasterCode=?", master_code)
+        query_start = time.time()
+        query3 = "SELECT Address1, Address2, Address3, Address4, Telno, Mobile FROM MasterAddressInfo WHERE MasterCode=?"
+        db_logger.debug('Executing query 3: %s with parameter: %s', query3, master_code)
+        cursor.execute(query3, master_code)
         address_row = cursor.fetchone()
+        query3_time = time.time() - query_start
+        db_logger.debug('Address query completed in %.2fs', query3_time)
         
         # Compile party information
         party_info = {
@@ -269,38 +438,61 @@ def get_party_info(quotation_number):
             'mobile': address_row.Mobile if address_row else ''
         }
         
+        total_time = time.time() - start_time
+        db_logger.info('Successfully retrieved customer info for quotation %s in %.2fs: %s', 
+                      quotation_number, total_time, shop_name)
+        
         return party_info
         
     except pyodbc.Error as e:
         error_code = e.args[0] if e.args else 'Unknown'
         error_msg = e.args[1] if len(e.args) > 1 else str(e)
         
+        elapsed_time = time.time() - start_time
+        
+        # Log detailed error information
+        db_logger.error(
+            'Database error for quotation %s (%.2fs): Code=%s, Message=%s, Driver=%s',
+            quotation_number, elapsed_time, error_code, error_msg, driver
+        )
+        
         # Provide specific error messages based on error codes
         if error_code in ['08001', '08S01']:
-            print(f"Database connection error: Cannot reach SQL Server '{DB_SERVER}'. Please check:")
-            print("- Server name is correct")
-            print("- SQL Server is running")
-            print("- Network connectivity")
-            print("- Firewall settings")
+            db_logger.error('Network connectivity issue to SQL Server %s', DB_SERVER)
+            app.logger.error("Database connection error: Cannot reach SQL Server '%s'", DB_SERVER)
         elif error_code == '18456':
-            print(f"Database authentication error: Access denied to '{DB_NAME}' database")
+            db_logger.error('Authentication failed for database %s', DB_NAME)
+            app.logger.error("Database authentication error: Access denied to '%s' database", DB_NAME)
+        elif error_code == '28000':
+            db_logger.error('Login failed - likely authentication method issue')
+            app.logger.error("Database login failed: Check Windows Authentication configuration")
         elif error_code == 'IM002':
-            print(f"Database driver error: ODBC driver not found or incompatible")
+            db_logger.error('ODBC driver compatibility issue')
+            app.logger.error("Database driver error: ODBC driver not found or incompatible")
         else:
-            print(f"Database error ({error_code}): {error_msg}")
+            db_logger.error('Unhandled database error: %s', error_msg)
+            app.logger.error("Database error (%s): %s", error_code, error_msg)
             
         return None
         
     except Exception as e:
-        print(f"Unexpected database error: {e}")
+        elapsed_time = time.time() - start_time
+        db_logger.error(
+            'Unexpected database error for quotation %s (%.2fs): %s',
+            quotation_number, elapsed_time, str(e), exc_info=True
+        )
+        app.logger.error('Unexpected database error: %s', str(e), exc_info=True)
         return None
         
     finally:
         if conn:
             try:
+                close_start = time.time()
                 conn.close()
-            except:
-                pass
+                close_time = time.time() - close_start
+                db_logger.debug('Database connection closed in %.3fs', close_time)
+            except Exception as close_error:
+                db_logger.warning('Error closing database connection: %s', close_error)
 
 def format_label(quotation, party_info):
     """Format label with crisp 5-line layout"""
@@ -1130,6 +1322,104 @@ def control():
         return jsonify({'success': True, 'message': 'Server start requested'})
 
     return jsonify({'success': False, 'error': 'Unknown action'}), 400
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring and load balancers"""
+    try:
+        health_info = {
+            'status': 'healthy',
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'version': '1.0.0',
+            'environment': Config.ENVIRONMENT,
+            'uptime_seconds': int(time.time() - startup_time)
+        }
+        
+        # Quick database connectivity test
+        if DB_SERVER and DB_NAME:
+            try:
+                # Quick connection test with minimal timeout
+                test_conn_str = f"DRIVER={{SQL Server}};SERVER={DB_SERVER};DATABASE={DB_NAME};Trusted_Connection=yes;Connection Timeout=5;"
+                with pyodbc.connect(test_conn_str) as test_conn:
+                    test_cursor = test_conn.cursor()
+                    test_cursor.execute("SELECT 1")
+                    test_cursor.fetchone()
+                health_info['database'] = 'connected'
+            except:
+                health_info['database'] = 'disconnected'
+                health_info['status'] = 'degraded'
+        else:
+            health_info['database'] = 'not_configured'
+            health_info['status'] = 'degraded'
+        
+        # Check printed database
+        try:
+            # Test if printed_db module is accessible
+            printed_db.init_db()  # This should be safe to call multiple times
+            health_info['printed_db'] = 'connected'
+        except Exception as e:
+            health_info['printed_db'] = f'error: {str(e)}'
+            health_info['status'] = 'degraded'
+        
+        status_code = 200 if health_info['status'] == 'healthy' else 503
+        return jsonify(health_info), status_code
+        
+    except Exception as e:
+        app.logger.error('Health check failed: %s', str(e), exc_info=True)
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e),
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }), 503
+
+@app.route('/metrics')
+def metrics():
+    """Basic metrics endpoint for monitoring"""
+    try:
+        # Get log file sizes and counts
+        log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+        log_files = {}
+        if os.path.exists(log_dir):
+            for filename in os.listdir(log_dir):
+                if filename.endswith('.log'):
+                    filepath = os.path.join(log_dir, filename)
+                    try:
+                        stat = os.stat(filepath)
+                        log_files[filename] = {
+                            'size_bytes': stat.st_size,
+                            'modified': datetime.fromtimestamp(stat.st_mtime).isoformat()
+                        }
+                    except:
+                        pass
+        
+        metrics_data = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'application': {
+                'name': 'Label Print Server',
+                'version': '1.0.0',
+                'environment': Config.ENVIRONMENT,
+                'uptime_seconds': int(time.time() - startup_time)
+            },
+            'database': {
+                'server': DB_SERVER,
+                'database': DB_NAME,
+                'configured': bool(DB_SERVER and DB_NAME)
+            },
+            'logs': log_files,
+            'system': {
+                'platform': os.name,
+                'python_version': sys.version.split()[0]
+            }
+        }
+        
+        return jsonify(metrics_data)
+        
+    except Exception as e:
+        app.logger.error('Metrics collection failed: %s', str(e), exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+# Record startup time for uptime calculation
+startup_time = time.time()
 
 if __name__ == '__main__':
     # This will run when called directly (not as a service)
