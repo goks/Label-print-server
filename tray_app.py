@@ -7,29 +7,72 @@ import subprocess
 from PIL import Image
 import tkinter as tk
 from tkinter import messagebox
+import atexit
+import tempfile
+import json
+import time
+import logging
 
 # Add win32 imports for custom tray icon
 import win32api
 import win32gui
 import win32con
 import win32gui_struct
+import win32process
+import win32event
 
 # Add the current directory to the path so we can import app
 sys.path.insert(0, os.path.dirname(__file__))
 
 from app import app
 from waitress import serve
+import signal
 
 # Global variables
 server_thread = None
 server_running = False
+server_stop_event = threading.Event()
+waitress_server = None
 window = None
 status_label = None
 hwnd = None
 gui_proc = None
+mutex_handle = None
 
 # Token file for local control requests from GUI process
 CONTROL_TOKEN_FILE = os.path.join(os.path.dirname(__file__), '.tray_control_token')
+
+# Single instance check
+MUTEX_NAME = "LabelPrintServerTrayApp"
+
+def cleanup_tray():
+    """Clean up tray icon and resources"""
+    global hwnd, mutex_handle
+    try:
+        if hwnd:
+            win32gui.Shell_NotifyIcon(NIM_DELETE, (hwnd, TRAY_ICON_ID, 0, 0, 0, ""))
+            print("Tray icon removed")
+    except Exception as e:
+        print(f"Error removing tray icon: {e}")
+    
+    try:
+        if mutex_handle:
+            win32api.CloseHandle(mutex_handle)
+    except Exception as e:
+        print(f"Error closing mutex: {e}")
+
+def check_single_instance():
+    """Ensure only one instance of tray app is running"""
+    global mutex_handle
+    try:
+        mutex_handle = win32event.CreateMutex(None, True, MUTEX_NAME)
+        if win32api.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            print("Another instance of tray app is already running!")
+            return False
+        return True
+    except Exception as e:
+        print(f"Error checking single instance: {e}")
+        return False
 
 # Tray icon constants
 TRAY_ICON_ID = 1
@@ -46,46 +89,304 @@ def update_status():
         status = "Running" if server_running else "Stopped"
         status_label.config(text=f"Server Status: {status}")
 
-def run_server():
-    global server_running
-    server_running = True
+# Global flag to control the signal monitor
+_monitor_running = True
+
+def persistent_signal_monitor():
+    """Persistent thread to monitor for start/stop/quit signals"""
+    global _monitor_running, server_running
+    
+    print("Starting persistent signal monitor...")
+    
+    while _monitor_running:
+        try:
+            # Check for quit signal file (complete shutdown)
+            quit_signal_file = os.path.join(os.path.dirname(__file__), '.tray_quit_signal')
+            if os.path.exists(quit_signal_file):
+                print("Quit signal detected, shutting down completely...")
+                try:
+                    os.remove(quit_signal_file)
+                except Exception:
+                    pass
+                
+                # Stop server if running
+                if server_running:
+                    server_stop_event.set()
+                
+                # Clean up tray running file and schedule complete exit
+                def complete_exit():
+                    time.sleep(1)  # Wait for server to stop
+                    try:
+                        tray_running_file = os.path.join(os.path.dirname(__file__), '.tray_running')
+                        if os.path.exists(tray_running_file):
+                            os.remove(tray_running_file)
+                            print("Removed tray running indicator file")
+                    except Exception as e:
+                        print(f"Error removing tray running file: {e}")
+                    print("Exiting tray application completely...")
+                    os._exit(0)
+                
+                exit_thread = threading.Thread(target=complete_exit, daemon=True)
+                exit_thread.start()
+                break
+            
+            # Check for regular stop signal file
+            stop_signal_file = os.path.join(os.path.dirname(__file__), '.tray_stop_signal')
+            if os.path.exists(stop_signal_file) and server_running:
+                print("Stop signal file detected, stopping server...")
+                try:
+                    os.remove(stop_signal_file)
+                except Exception:
+                    pass
+                server_stop_event.set()
+                
+            # Check for start signal file (only if server not running)
+            start_signal_file = os.path.join(os.path.dirname(__file__), '.tray_start_signal')
+            if os.path.exists(start_signal_file) and not server_running:
+                print("Start signal file detected, starting server...")
+                try:
+                    os.remove(start_signal_file)
+                except Exception:
+                    pass
+                # Start the server in a separate thread
+                threading.Thread(target=start_server, daemon=True).start()
+                
+        except Exception as e:
+            print(f"Error in signal monitor: {e}")
+            
+        time.sleep(0.5)  # Check every 500ms
+    
+    print("Signal monitor stopped")
+
+def setup_logging():
+    """Configure logging to suppress waitress shutdown errors"""
     try:
-        # Run using waitress; it'll block this thread until stopped via the stop_event
-        serve(app, host='0.0.0.0', port=5000, threads=4)
+        # Suppress waitress socket errors during shutdown
+        waitress_logger = logging.getLogger('waitress')
+        waitress_logger.setLevel(logging.CRITICAL)  # Only show critical errors
+        
+        # Create a custom handler that filters out socket errors
+        class SocketErrorFilter(logging.Filter):
+            def filter(self, record):
+                message = record.getMessage()
+                # Filter out common socket shutdown errors
+                if any(error in message for error in [
+                    "not a socket", 
+                    "Bad file descriptor",
+                    "An operation was attempted on something that is not a socket"
+                ]):
+                    return False
+                return True
+        
+        # Apply filter to waitress logger
+        for handler in waitress_logger.handlers:
+            handler.addFilter(SocketErrorFilter())
+            
+    except Exception as e:
+        print(f"Error setting up logging: {e}")
+
+def run_server():
+    global server_running, waitress_server
+    
+    print("Starting Flask server thread...")
+    server_running = True
+    server_stop_event.clear()
+    
+    # Setup logging to suppress waitress errors
+    setup_logging()
+    
+    try:
+        # Create waitress server with channel timeout and better cleanup settings
+        from waitress.server import create_server
+        waitress_server = create_server(
+            app, 
+            host='0.0.0.0', 
+            port=5000, 
+            threads=4, 
+            channel_timeout=1,
+            cleanup_interval=1,
+            connection_limit=100
+        )
+        print("Server created, starting to listen...")
+        
+        # Run server in current thread with stop monitoring
+        def check_stop_event():
+            """Check stop event in a separate thread"""
+            while server_running and not server_stop_event.is_set():
+                time.sleep(0.1)
+            
+            if server_stop_event.is_set():
+                print("Stop event detected, initiating server shutdown...")
+                try:
+                    waitress_server.close()
+                except Exception as e:
+                    print(f"Error during server.close(): {e}")
+        
+        # Start stop event monitor in daemon thread
+        stop_monitor = threading.Thread(target=check_stop_event, daemon=True)
+        stop_monitor.start()
+        
+        # Run server in current thread (blocking call)
+        print("Server started, waiting for requests...")
+        try:
+            waitress_server.run()
+        except Exception as e:
+            # Suppress common shutdown errors
+            if "not a socket" not in str(e) and "Bad file descriptor" not in str(e):
+                print(f"Server runner error: {e}")
+        
+        print("Server run() method completed")
+        
     except Exception as e:
         print(f"Server error: {e}")
     finally:
+        # Cleanup and reset state
+        print("Server cleanup starting...")
+        
+        if waitress_server:
+            try:
+                print("Gracefully closing waitress server...")
+                # Give pending requests time to complete
+                time.sleep(0.3)
+                waitress_server.close()
+                # Wait a bit more for cleanup
+                time.sleep(0.2)
+            except Exception as e:
+                print(f"Error closing server: {e}")
+        
+        # Reset the Flask app stop flag
+        try:
+            if hasattr(app, '_stop_requested'):
+                app._stop_requested = False
+                print("Reset Flask app stop flag")
+        except Exception as e:
+            print(f"Error resetting stop flag: {e}")
+        
+        # Reset global state
         server_running = False
+        waitress_server = None
+        print("Server cleanup completed - ready for restart")
         update_status()
 
 def start_server():
     global server_thread, server_running
-    if not server_running:
-        # ensure control token exists for GUI to use
+    
+    print(f"start_server() called - current server_running: {server_running}")
+    
+    if server_running:
+        print("Server already running, ignoring start request")
+        return
+        
+    # Reset the stop flag in Flask app when starting
+    try:
+        if hasattr(app, '_stop_requested'):
+            app._stop_requested = False
+            print("Reset Flask app stop flag")
+    except Exception as e:
+        print(f"Error resetting stop flag: {e}")
+    
+    # Ensure control token exists for GUI to use
+    try:
         with open(CONTROL_TOKEN_FILE, 'w') as f:
             f.write('control-token')
+        print("Control token file created")
+    except Exception as e:
+        print(f"Error creating control token: {e}")
 
-        server_thread = threading.Thread(target=run_server, daemon=True)
-        server_thread.start()
-        update_status()
+    # Create a brand new server thread
+    print("Creating new server thread...")
+    server_thread = threading.Thread(target=run_server, daemon=False)  # Not daemon so it can complete properly
+    server_thread.start()
+    print("Server thread started successfully")
+    
+    # Update status in main thread
+    update_status()
 
 def stop_server():
-    global server_running
-    if server_running:
-        # Signal the server to stop by requesting the internal control endpoint
+    global server_running, waitress_server, server_thread
+    
+    print(f"stop_server() called - current server_running: {server_running}")
+    
+    if not server_running:
+        print("Server not running, ignoring stop request")
+        return
+    
+    print("Setting stop event...")
+    server_stop_event.set()
+    
+    # Also try to close the waitress server directly if available
+    if waitress_server:
         try:
-            if os.path.exists(CONTROL_TOKEN_FILE):
-                token = open(CONTROL_TOKEN_FILE).read().strip()
-            else:
-                token = 'control-token'
-
-            r = requests.post('http://127.0.0.1:5000/control', json={'action': 'stop', 'token': token}, timeout=3)
-            print('stop_server: control response', r.status_code, r.text)
+            print("Closing waitress server directly...")
+            waitress_server.close()
         except Exception as e:
-            print(f"Error stopping server via control endpoint: {e}")
-        # waitress doesn't expose a shutdown on the served function; rely on the control endpoint in app.py to call os._exit
-        server_running = False
-        update_status()
+            print(f"Error closing waitress server: {e}")
+    
+    # Don't set server_running = False here - let run_server() cleanup do it
+    # This prevents race conditions
+    print("Server stop signal sent, waiting for cleanup...")
+    update_status()
+
+def restore_gui_via_signal():
+    """Try to restore GUI using signal file method"""
+    try:
+        temp_dir = tempfile.gettempdir()
+        restore_file = os.path.join(temp_dir, 'label_print_restore_signal.tmp')
+        
+        # Create signal file to tell GUI to restore itself
+        with open(restore_file, 'w') as f:
+            f.write('restore')
+        
+        print('Sent restore signal via file')
+        
+        # Wait a bit to see if restoration worked
+        time.sleep(1.0)
+        
+        # Check if signal file was consumed (GUI removed it)
+        consumed = not os.path.exists(restore_file)
+        print(f'Signal file consumed: {consumed}')
+        return consumed
+        
+    except Exception as e:
+        print(f'Error sending restore signal: {e}')
+        return False
+
+def restore_gui_direct(target_pid):
+    """Try direct window restoration via Win32 API"""
+    try:
+        found = False
+        def enum_win(hwnd, extra):
+            nonlocal found
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                if pid == target_pid:
+                    # Get window info
+                    text = win32gui.GetWindowText(hwnd)
+                    class_name = win32gui.GetClassName(hwnd)
+                    
+                    # Look for our tkinter window
+                    if class_name == "Tk" or "Label Print Server" in text:
+                        print(f'Found window: {text} (class: {class_name}, visible: {win32gui.IsWindowVisible(hwnd)})')
+                        try:
+                            # Force show the window
+                            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+                            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                            win32gui.SetForegroundWindow(hwnd)
+                            found = True
+                            print(f'Restored window successfully')
+                            return False
+                        except Exception as e:
+                            print(f'Error restoring window: {e}')
+            except Exception as e:
+                print(f'Error in enum callback: {e}')
+            return True
+
+        win32gui.EnumWindows(enum_win, None)
+        return found
+        
+    except Exception as e:
+        print(f'Error in direct restore: {e}')
+        return False
 
 def show_gui(icon, item):
     """Launch or focus a separate GUI process. Guard against multiple launches."""
@@ -97,14 +398,46 @@ def show_gui(icon, item):
             create_window()
             return
 
-        # If gui_proc is alive, do nothing (or try to bring it to front)
-        if gui_proc and gui_proc.poll() is None:
-            print('GUI already running')
-            return
+        # Check if we already have a running GUI process
+        if gui_proc is not None and gui_proc.poll() is None:
+            print(f'GUI process {gui_proc.pid} is still running, attempting to restore...')
+            
+            # Try signal file method first
+            restored = restore_gui_via_signal()
+            
+            if not restored:
+                print('Signal method failed, trying direct window restoration...')
+                restored = restore_gui_direct(gui_proc.pid)
+            
+            if restored:
+                print('Successfully restored existing GUI window')
+                return
+            else:
+                print('Could not restore GUI window - it may be starting up or hidden')
+                return
 
-        # Launch GUI process with token file path argument
-        gui_proc = subprocess.Popen([sys.executable, gui_script], close_fds=True)
-        print('Launched GUI process', gui_proc.pid)
+        # Clean up dead process reference
+        if gui_proc is not None and gui_proc.poll() is not None:
+            print(f'Previous GUI process {gui_proc.pid} has ended')
+            gui_proc = None
+
+        # Launch new GUI process with better isolation
+        print('Launching new GUI process...')
+        
+        # Set environment variables for GUI process isolation
+        gui_env = os.environ.copy()
+        gui_env['PYTHONPATH'] = os.path.dirname(__file__)
+        gui_env['GUI_PROCESS'] = '1'  # Flag to indicate this is a GUI process
+        
+        # Launch with process isolation
+        gui_proc = subprocess.Popen(
+            [sys.executable, gui_script], 
+            close_fds=True,
+            env=gui_env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP') else 0
+        )
+        print(f'Launched GUI process {gui_proc.pid} with isolation')
+        
     except Exception as e:
         print(f'Failed to launch GUI process: {e}')
         try:
@@ -161,22 +494,84 @@ def exit_app():
 TRAY_ICON_ID = 1
 WM_TRAYICON = win32con.WM_USER + 1
 
+def show_context_menu(hwnd):
+    """Show context menu for tray icon"""
+    try:
+        # Create popup menu
+        hmenu = win32gui.CreatePopupMenu()
+        
+        # Add menu items - using InsertMenu instead of AppendMenu for better compatibility
+        win32gui.InsertMenu(hmenu, 0, win32con.MF_BYPOSITION | win32con.MF_STRING, 1001, "Show GUI")
+        win32gui.InsertMenu(hmenu, 1, win32con.MF_BYPOSITION | win32con.MF_SEPARATOR, 0, None)
+        win32gui.InsertMenu(hmenu, 2, win32con.MF_BYPOSITION | win32con.MF_STRING, 1002, "Quit")
+        
+        # Get cursor position
+        pos = win32gui.GetCursorPos()
+        
+        # Set foreground window (required for popup menu to work properly)
+        win32gui.SetForegroundWindow(hwnd)
+        
+        # Show popup menu - create a zero RECT
+        rect = (0, 0, 0, 0)
+        cmd = win32gui.TrackPopupMenu(
+            hmenu,
+            win32con.TPM_LEFTALIGN | win32con.TPM_RETURNCMD,
+            pos[0], pos[1], 0, hwnd, rect
+        )
+        
+        # Handle menu selection
+        if cmd == 1001:  # Show GUI
+            show_gui(None, None)
+        elif cmd == 1002:  # Quit
+            quit_application()
+        
+        # Clean up
+        win32gui.DestroyMenu(hmenu)
+        
+        # Post message to clear menu state
+        win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
+        
+    except Exception as e:
+        print(f"Error showing context menu: {e}")
+        # Fallback to just showing GUI if menu fails
+        show_gui(None, None)
+
+def quit_application():
+    """Quit the entire application including server"""
+    try:
+        print("Quit requested from tray menu...")
+        
+        # Create quit signal file
+        quit_signal_file = os.path.join(os.path.dirname(__file__), '.tray_quit_signal')
+        with open(quit_signal_file, 'w') as f:
+            f.write('quit')
+        
+        # Exit after a short delay to allow signal processing
+        def delayed_exit():
+            time.sleep(0.5)
+            os._exit(0)
+        
+        exit_thread = threading.Thread(target=delayed_exit, daemon=True)
+        exit_thread.start()
+        
+    except Exception as e:
+        print(f"Error during quit: {e}")
+        os._exit(0)
+
 def wnd_proc(hwnd, msg, wparam, lparam):
     # Debug: print incoming messages for troubleshooting
-    try:
-        print(f"wnd_proc: msg={msg}, lparam={lparam}, wparam={wparam}")
-    except Exception:
-        pass
+    # try:
+    #     print(f"wnd_proc: msg={msg}, lparam={lparam}, wparam={wparam}")
+    # except Exception:
+    #     pass
 
     if msg == WM_TRAYICON:
-        # log specific lparam values
-        if lparam in (win32con.WM_LBUTTONDBLCLK, win32con.WM_RBUTTONUP):
-            print(f"tray event: dblclick or rbuttonup received (lparam={lparam})")
+        # Handle left clicks and double-clicks to show GUI
+        if lparam in (win32con.WM_LBUTTONDBLCLK, win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP):
             show_gui(None, None)
-        # also respond to single left click (down/up) and right button down
-        elif lparam in (win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP, win32con.WM_RBUTTONDOWN):
-            print(f"tray event: click received (lparam={lparam})")
-            show_gui(None, None)
+        # Handle right click to show context menu
+        elif lparam == win32con.WM_RBUTTONUP:
+            show_context_menu(hwnd)
     elif msg == win32con.WM_DESTROY:
         win32gui.PostQuitMessage(0)
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
@@ -212,11 +607,33 @@ if not hicon:
 nid = (hwnd, TRAY_ICON_ID, NIF_ICON | NIF_MESSAGE | NIF_TIP, WM_TRAYICON, hicon, "Label Print Server")
 win32gui.Shell_NotifyIcon(NIM_ADD, nid)
 
+# Create tray running indicator file
+try:
+    tray_running_file = os.path.join(os.path.dirname(__file__), '.tray_running')
+    with open(tray_running_file, 'w') as f:
+        f.write(str(os.getpid()))
+    print("Created tray running indicator file")
+except Exception as e:
+    print(f"Error creating tray running file: {e}")
+
 # Start server
 start_server()
+
+# Start persistent signal monitor
+monitor_thread = threading.Thread(target=persistent_signal_monitor, daemon=True)
+monitor_thread.start()
 
 # Message loop
 win32gui.PumpMessages()
 
 # Cleanup
+print("Tray app shutting down...")
+try:
+    tray_running_file = os.path.join(os.path.dirname(__file__), '.tray_running')
+    if os.path.exists(tray_running_file):
+        os.remove(tray_running_file)
+        print("Removed tray running indicator file")
+except Exception as e:
+    print(f"Error removing tray running file: {e}")
+
 win32gui.Shell_NotifyIcon(NIM_DELETE, (hwnd, TRAY_ICON_ID, 0, 0, 0, ""))

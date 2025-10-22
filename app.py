@@ -11,6 +11,8 @@ import subprocess
 from dotenv import load_dotenv
 load_dotenv()
 
+import printed_db
+
 app = Flask(__name__)
 
 # Configure logging for service mode
@@ -131,6 +133,13 @@ def save_db_settings(server, database, printer=None, bartender_template=None):
 
 # Load settings on startup
 load_db_settings()
+
+# Initialize printed records DB
+try:
+    printed_db.init_db()
+    print('Server: printed_records DB initialized')
+except Exception as e:
+    print(f'Server: Failed initializing printed DB: {e}')
 
 # Log startup configuration
 startup_msg = [
@@ -621,6 +630,11 @@ def print_label_route():
     
     if success:
         print(f"Server: Successfully sent print job for quotation {quotation}")
+        try:
+            printed_db.record_print(quotation, party=party, address=address, phone=phone, mobile=mobile)
+            print(f"Server: Recorded printed quotation {quotation} in local DB")
+        except Exception as e:
+            print(f"Server: Failed to record printed quotation: {e}")
         return jsonify({'status': 'printed', 'message': 'Label sent to printer successfully'})
     else:
         print(f"Server: Failed to print label for quotation {quotation}")
@@ -641,6 +655,32 @@ def get_printers():
     """Get list of available printers"""
     printers = get_available_printers()
     return jsonify({'printers': printers})
+
+
+@app.route('/printed-records', methods=['GET'])
+def printed_records():
+    try:
+        # Pagination params
+        try:
+            page = int(request.args.get('page', '1'))
+            page_size = int(request.args.get('page_size', '50'))
+            if page < 1:
+                page = 1
+            if page_size < 1:
+                page_size = 50
+        except Exception:
+            page = 1
+            page_size = 50
+
+        q = request.args.get('q')
+        offset = (page - 1) * page_size
+        data = printed_db.get_recent(limit=page_size, q=q, offset=offset)
+        total = data.get('total', 0)
+        records = data.get('records', [])
+        has_more = (offset + len(records)) < total
+        return jsonify({'success': True, 'records': records, 'total': total, 'page': page, 'page_size': page_size, 'has_more': has_more})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/save-settings', methods=['POST'])
 def save_settings():
@@ -736,9 +776,13 @@ def shutdown():
     return jsonify({'success': False, 'error': 'Not running with the Werkzeug Server; use /control or provide token'}), 500
 
 
+# Global flag for tray-managed shutdown
+_stop_requested = False
+
 @app.route('/control', methods=['POST'])
 def control():
     """Internal control endpoint for tray GUI. Expects JSON {action: 'stop', token: '...'}"""
+    global _stop_requested
     try:
         data = request.get_json(force=True)
     except Exception:
@@ -761,22 +805,56 @@ def control():
         return jsonify({'success': False, 'error': 'Unauthorized'}), 403
 
     if action == 'stop':
-        # Use a background thread to exit after returning a response so the HTTP client
-        # receives the reply instead of having the connection reset immediately.
-        print('Control: stop action received, scheduling process exit')
+        # Set flag that tray_app can check to trigger server shutdown
+        _stop_requested = True
+        print('Control: stop action received, flag set for tray')
+        
+        # Create stop signal file for tray_app
+        stop_signal_file = os.path.join(os.path.dirname(__file__), '.tray_stop_signal')
+        try:
+            with open(stop_signal_file, 'w') as f:
+                f.write('stop')
+            print('Created stop signal file')
+        except Exception as e:
+            print(f'Error creating stop signal: {e}')
+        
         try:
             os.remove(token_file)
         except Exception:
             pass
-
-        def delayed_exit():
-            import time
-            time.sleep(0.25)
-            os._exit(0)
-
-        t = threading.Thread(target=delayed_exit, daemon=True)
-        t.start()
-        return jsonify({'success': True, 'message': 'Server will stop shortly'})
+        return jsonify({'success': True, 'message': 'Server stop requested'})
+    
+    elif action == 'quit':
+        # Set flag and also create quit signal for tray app to exit completely
+        _stop_requested = True
+        print('Control: quit action received, signaling complete shutdown')
+        
+        # Create quit signal file for tray_app
+        quit_signal_file = os.path.join(os.path.dirname(__file__), '.tray_quit_signal')
+        try:
+            with open(quit_signal_file, 'w') as f:
+                f.write('quit')
+        except Exception as e:
+            print(f'Error creating quit signal: {e}')
+        
+        try:
+            os.remove(token_file)
+        except Exception:
+            pass
+        return jsonify({'success': True, 'message': 'Complete shutdown requested'})
+    
+    elif action == 'start':
+        # Create start signal file for tray_app
+        print('Control: start action received, signaling server start')
+        start_signal_file = os.path.join(os.path.dirname(__file__), '.tray_start_signal')
+        try:
+            with open(start_signal_file, 'w') as f:
+                f.write('start')
+            print('Created start signal file')
+        except Exception as e:
+            print(f'Error creating start signal: {e}')
+        
+        return jsonify({'success': True, 'message': 'Server start requested'})
 
     return jsonify({'success': False, 'error': 'Unknown action'}), 400
 

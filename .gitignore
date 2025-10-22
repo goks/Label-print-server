@@ -4,5 +4,6 @@ config.ini
 db_settings.json
 *.pyc
 *.log
+*.db
 __pycache__/
 .venv/
