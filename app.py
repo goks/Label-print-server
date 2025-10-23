@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import printed_db
+from update_manager import UpdateManager, UpdateChecker
 
 # Production configuration
 class Config:
@@ -202,6 +203,10 @@ DB_NAME = os.environ.get('DB_NAME')
 SETTINGS_FILE = 'db_settings.json'
 SELECTED_PRINTER = None  # Will store the selected printer name
 BARTENDER_TEMPLATE = None  # Will store the BarTender template path
+
+# Update system globals
+update_manager = None
+update_checker = None
 
 def get_available_printers():
     """Get list of available printers on Windows"""
@@ -995,6 +1000,64 @@ def printed_records():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/check-updates', methods=['GET'])
+def check_updates():
+    """Check for available updates"""
+    try:
+        force = request.args.get('force', 'false').lower() == 'true'
+        
+        update_manager = UpdateManager()
+        result = update_manager.check_and_update(force=force)
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/install-update', methods=['POST'])
+def install_update():
+    """Manually install available update"""
+    try:
+        update_manager = UpdateManager()
+        result = update_manager.manual_update()
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/update-config', methods=['GET', 'POST'])
+def update_config():
+    """Get or set update configuration"""
+    try:
+        update_manager = UpdateManager()
+        
+        if request.method == 'GET':
+            return jsonify({
+                'status': 'success',
+                'config': update_manager.config,
+                'current_version': update_manager.current_version
+            })
+        
+        elif request.method == 'POST':
+            data = request.json
+            if not data:
+                return jsonify({'status': 'error', 'message': 'No data provided'})
+            
+            # Update configuration
+            for key, value in data.items():
+                if key in update_manager.config:
+                    update_manager.config[key] = value
+            
+            update_manager.save_update_config()
+            
+            return jsonify({
+                'status': 'success',
+                'message': 'Update configuration saved',
+                'config': update_manager.config
+            })
+    
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/save-settings', methods=['POST'])
 def save_settings():
     """Save new database, printer and BarTender settings"""
@@ -1483,6 +1546,21 @@ def metrics():
 
 # Record startup time for uptime calculation
 startup_time = time.time()
+
+# Initialize update system
+def initialize_update_system():
+    """Initialize the update management system"""
+    global update_manager, update_checker
+    try:
+        update_manager = UpdateManager()
+        update_checker = UpdateChecker(update_manager)
+        update_checker.start()
+        app.logger.info("Update system initialized successfully")
+    except Exception as e:
+        app.logger.error(f"Failed to initialize update system: {e}")
+
+# Initialize update system on startup
+initialize_update_system()
 
 if __name__ == '__main__':
     # This will run when called directly (not as a service)
