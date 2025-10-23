@@ -18,6 +18,9 @@ Pillow>=10.0.0
 # HTTP client
 requests>=2.31.0
 
+# Version management for updates
+packaging>=21.0
+
 # Production WSGI server
 waitress>=2.1.2
 

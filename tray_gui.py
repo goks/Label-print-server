@@ -8,6 +8,8 @@ import sys
 import json
 import tempfile
 import winreg
+import threading
+from update_manager import UpdateManager
 
 
 # Modern GUI for controlling the Label Print Server
@@ -426,6 +428,9 @@ class TrayGUI(tk.Tk):
         # Startup management section
         self.create_startup_section(main_container)
         
+        # Update management section
+        self.create_update_section(main_container)
+        
         # Search and filters section
         self.create_search_section(main_container)
         
@@ -609,6 +614,207 @@ class TrayGUI(tk.Tk):
             self.check_startup_status()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to disable auto-startup:\n{str(e)}")
+
+    def create_update_section(self, parent):
+        """Create update management section with version info and update controls"""
+        update_frame = tk.Frame(parent, bg='#ffffff', relief='solid', bd=1)
+        update_frame.pack(fill='x', pady=(0, 20), ipady=10)
+        
+        # Left side - Version and update status
+        status_frame = tk.Frame(update_frame, bg='#ffffff')
+        status_frame.pack(side='left', padx=20)
+        
+        # Version info
+        version_label = tk.Label(status_frame, text="📦 Version:", 
+                                font=('Arial', 10, 'bold'), bg='#ffffff', fg='#495057')
+        version_label.pack(side='left')
+        
+        self.version_label = tk.Label(status_frame, text="Loading...", 
+                                     font=('Arial', 10), bg='#ffffff', fg='#666')
+        self.version_label.pack(side='left', padx=(10, 20))
+        
+        # Update status
+        update_status_label = tk.Label(status_frame, text="🔄 Updates:", 
+                                      font=('Arial', 10, 'bold'), bg='#ffffff', fg='#495057')
+        update_status_label.pack(side='left')
+        
+        self.update_status_label = tk.Label(status_frame, text="Checking...", 
+                                           font=('Arial', 10), bg='#ffffff', fg='#666')
+        self.update_status_label.pack(side='left', padx=(10, 0))
+        
+        # Right side - Control buttons
+        controls_frame = tk.Frame(update_frame, bg='#ffffff')
+        controls_frame.pack(side='right', padx=20)
+        
+        self.check_updates_btn = self.create_modern_button(controls_frame, "🔍 Check Updates", 
+                                                          self.check_for_updates, 'primary')
+        self.check_updates_btn.pack(side='right', padx=(10, 0))
+        self.create_tooltip(self.check_updates_btn, "Check GitHub for available updates")
+        
+        self.install_update_btn = self.create_modern_button(controls_frame, "📥 Install Update", 
+                                                           self.install_update, 'success')
+        self.install_update_btn.pack(side='right', padx=(10, 0))
+        self.create_tooltip(self.install_update_btn, "Install available update")
+        self.install_update_btn.config(state='disabled')  # Disabled until update is available
+        
+        # Initialize update manager and get current version
+        self.update_manager = None
+        self.available_update = None
+        self.initialize_update_system()
+
+    def initialize_update_system(self):
+        """Initialize the update management system"""
+        try:
+            self.update_manager = UpdateManager()
+            current_version = self.update_manager.current_version
+            self.version_label.config(text=f"v{current_version}")
+            
+            # Check for updates in background
+            self.after(2000, self.check_for_updates_background)
+            
+        except Exception as e:
+            self.version_label.config(text="Unknown")
+            self.update_status_label.config(text="❌ Error", fg='#dc3545')
+            print(f"Failed to initialize update system: {e}")
+
+    def check_for_updates_background(self):
+        """Check for updates in background without blocking UI"""
+        def background_check():
+            try:
+                if self.update_manager:
+                    result = self.update_manager.check_and_update(force=False)
+                    
+                    # Update UI in main thread
+                    self.after(0, lambda: self.update_status_display(result))
+            except Exception as e:
+                self.after(0, lambda: self.update_status_display({'status': 'error', 'message': str(e)}))
+        
+        # Run in background thread
+        threading.Thread(target=background_check, daemon=True).start()
+
+    def update_status_display(self, result):
+        """Update the UI with check results"""
+        try:
+            if result['status'] == 'no_update':
+                self.update_status_label.config(text="✅ Up to date", fg='#28a745')
+                self.install_update_btn.config(state='disabled')
+                self.available_update = None
+                
+            elif result['status'] == 'update_available':
+                version = result.get('version', 'Unknown')
+                self.update_status_label.config(text=f"📦 v{version} available", fg='#007bff')
+                self.install_update_btn.config(state='normal')
+                self.available_update = result
+                
+            elif result['status'] == 'updated':
+                version = result.get('version', 'Unknown')
+                self.update_status_label.config(text=f"✅ Updated to v{version}", fg='#28a745')
+                self.install_update_btn.config(state='disabled')
+                self.available_update = None
+                
+            elif result['status'] == 'error':
+                self.update_status_label.config(text="❌ Check failed", fg='#dc3545')
+                self.install_update_btn.config(state='disabled')
+                
+        except Exception as e:
+            print(f"Error updating status display: {e}")
+
+    def check_for_updates(self):
+        """Manually check for updates"""
+        self.update_status_label.config(text="🔄 Checking...", fg='#ffc107')
+        self.check_updates_btn.config(state='disabled')
+        
+        def background_check():
+            try:
+                if self.update_manager:
+                    result = self.update_manager.check_and_update(force=True)
+                    self.after(0, lambda: self.update_status_display(result))
+                else:
+                    self.after(0, lambda: self.update_status_display({'status': 'error', 'message': 'Update system not initialized'}))
+            except Exception as e:
+                self.after(0, lambda: self.update_status_display({'status': 'error', 'message': str(e)}))
+            finally:
+                self.after(0, lambda: self.check_updates_btn.config(state='normal'))
+        
+        threading.Thread(target=background_check, daemon=True).start()
+
+    def install_update(self):
+        """Install available update"""
+        if not self.available_update:
+            messagebox.showwarning("No Update", "No update is currently available.")
+            return
+        
+        version = self.available_update.get('version', 'Unknown')
+        changelog = self.available_update.get('changelog', 'No changelog available.')
+        
+        # Show confirmation dialog
+        message = f"Install update to version {version}?\n\n"
+        if changelog:
+            # Limit changelog length for dialog
+            if len(changelog) > 300:
+                changelog = changelog[:300] + "..."
+            message += f"Changes:\n{changelog}\n\n"
+        message += "⚠️ The application will restart after update."
+        
+        if not messagebox.askyesno("Install Update", message):
+            return
+        
+        # Disable buttons and show progress
+        self.install_update_btn.config(state='disabled')
+        self.check_updates_btn.config(state='disabled')
+        self.update_status_label.config(text="📥 Installing...", fg='#ffc107')
+        
+        def background_install():
+            try:
+                if self.update_manager:
+                    result = self.update_manager.manual_update()
+                    self.after(0, lambda: self.installation_complete(result))
+                else:
+                    self.after(0, lambda: self.installation_complete({'status': 'error', 'message': 'Update system not initialized'}))
+            except Exception as e:
+                self.after(0, lambda: self.installation_complete({'status': 'error', 'message': str(e)}))
+        
+        threading.Thread(target=background_install, daemon=True).start()
+
+    def installation_complete(self, result):
+        """Handle installation completion"""
+        try:
+            if result['status'] == 'success':
+                version = result.get('version', 'Unknown')
+                messagebox.showinfo("Update Complete", 
+                    f"Successfully updated to version {version}!\n\n"
+                    "The application will restart now.")
+                
+                # Restart the application
+                self.restart_application()
+                
+            else:
+                error_msg = result.get('message', 'Unknown error occurred')
+                messagebox.showerror("Update Failed", 
+                    f"Failed to install update:\n{error_msg}\n\n"
+                    "Please try again or install manually.")
+                
+                # Re-enable buttons
+                self.install_update_btn.config(state='normal')
+                self.check_updates_btn.config(state='normal')
+                self.update_status_label.config(text="❌ Install failed", fg='#dc3545')
+                
+        except Exception as e:
+            print(f"Error handling installation completion: {e}")
+
+    def restart_application(self):
+        """Restart the application after update"""
+        try:
+            # Signal tray app to restart
+            restart_signal_file = os.path.join(os.path.dirname(__file__), '.restart_required')
+            with open(restart_signal_file, 'w') as f:
+                f.write('update_complete')
+            
+            # Close GUI
+            self.quit_requested()
+            
+        except Exception as e:
+            print(f"Error restarting application: {e}")
 
     def create_modern_button(self, parent, text, command, button_type='default', **kwargs):
         """Create a modern button with proper styling and contrast"""
