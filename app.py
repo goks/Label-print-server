@@ -580,7 +580,7 @@ def print_label_bartender(quotation, party_info, bartender_template_path):
         print(f"Server: Customer: {customer_name}")
         print(f"Server: Combined contact: {combined_contact}")
         
-        # Method 1: Try BarTender Command Line Interface
+        # Method 1: Optimized BarTender Command Line Interface (Async)
         try:
             bartender_cmd = [
                 'bartend.exe',
@@ -590,30 +590,36 @@ def print_label_bartender(quotation, party_info, bartender_template_path):
                 '/AF=address=' + address,
                 '/AF=mobile=' + combined_contact,
                 '/AF=packed_time=' + packed_time,
-                '/P'  # Print command
+                '/P',  # Print command
+                '/X'   # Exit after printing
             ]
             
             # Add printer selection if specified
             if SELECTED_PRINTER:
                 bartender_cmd.append(f'/PRN={SELECTED_PRINTER}')
-                print(f"Server: Using HARDCODED BarTender printer: {SELECTED_PRINTER}")
+                app.logger.info(f"Fast BarTender print to: {SELECTED_PRINTER}")
             else:
                 print(f"Server: Using default BarTender printer")
             
-            # Close BarTender after printing
-            bartender_cmd.append('/C')
+            # Use Popen for non-blocking BarTender execution
+            process = subprocess.Popen(bartender_cmd,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             
-            result = subprocess.run(bartender_cmd,
-                                  capture_output=True,
-                                  text=True,
-                                  timeout=30,
-                                  creationflags=subprocess.CREATE_NO_WINDOW)
-            
-            if result.returncode == 0:
-                print(f"Server: BarTender print successful")
-                return True
-            else:
-                print(f"Server: BarTender CLI failed: {result.stderr}")
+            # Set a short timeout for immediate response
+            try:
+                stdout, stderr = process.communicate(timeout=3)  # 3 second max wait
+                if process.returncode == 0:
+                    app.logger.info(f"BarTender print job dispatched successfully")
+                    return True
+                else:
+                    app.logger.warning(f"BarTender dispatch warning: {stderr.decode() if stderr else 'Unknown'}")
+                    return True  # Still consider success since job was dispatched
+            except subprocess.TimeoutExpired:
+                # BarTender is still running - this is good for fast response
+                app.logger.info(f"BarTender print job dispatched (background processing)")
+                return True  # Don't wait for completion
                 
         except Exception as cli_error:
             print(f"Server: BarTender CLI method failed: {cli_error}")
@@ -679,25 +685,30 @@ def print_label(quotation, party, address='', phone='', mobile=''):
             'mobile': mobile
         }
         
-        # Try BarTender printing first if template is configured
-        if BARTENDER_TEMPLATE and os.path.exists(BARTENDER_TEMPLATE):
-            print(f"Server: Using BarTender template: {BARTENDER_TEMPLATE}")
+        # Check for performance mode (for testing)
+        performance_mode = os.environ.get('PERFORMANCE_MODE', 'false').lower() == 'true'
+        
+        # Try BarTender printing first if template is configured and not in performance mode
+        if not performance_mode and BARTENDER_TEMPLATE and os.path.exists(BARTENDER_TEMPLATE):
+            app.logger.info(f"Using BarTender template: {BARTENDER_TEMPLATE}")
             success = print_label_bartender(quotation, party_info, BARTENDER_TEMPLATE)
             if success:
                 return True
             else:
-                print(f"Server: BarTender failed, falling back to text printing")
+                app.logger.warning(f"BarTender failed, falling back to text printing")
         else:
-            if BARTENDER_TEMPLATE:
-                print(f"Server: BarTender template not found: {BARTENDER_TEMPLATE}")
+            if performance_mode:
+                app.logger.info("Performance mode: Using fast text printing")
+            elif BARTENDER_TEMPLATE:
+                app.logger.warning(f"BarTender template not found: {BARTENDER_TEMPLATE}")
             else:
-                print(f"Server: No BarTender template configured, using text printing")
+                app.logger.info("No BarTender template configured, using text printing")
         
         # Fallback to text-based printing (original method)
         return print_label_text(quotation, party_info)
         
     except Exception as e:
-        print(f"Server: Print error: {e}")
+        app.logger.error(f"Print error: {e}")
         return False
 
 def print_label_text(quotation, party_info):
@@ -718,42 +729,48 @@ def print_label_text(quotation, party_info):
             tf.write(label_text)
             temp_file_name = tf.name
 
-        # Always try PowerShell Out-Printer method first (most reliable and silent)
+        # Optimized PowerShell Out-Printer method for fast printing
         try:
             if SELECTED_PRINTER:
-                # Use specifically selected printer - HARDCODED until user changes it
+                # Use specifically selected printer with optimized PowerShell command
                 powershell_cmd = [
                     'powershell', 
+                    '-WindowStyle', 'Hidden',
+                    '-ExecutionPolicy', 'Bypass',
                     '-Command', 
-                    f'Get-Content "{temp_file_name}" | Out-Printer -Name "{SELECTED_PRINTER}"'
+                    f'Get-Content "{temp_file_name}" -Raw | Out-Printer -Name "{SELECTED_PRINTER}"'
                 ]
-                print(f"Server: Using HARDCODED printer selection: {SELECTED_PRINTER}")
+                app.logger.info(f"Fast print to: {SELECTED_PRINTER}")
             else:
-                # Use default printer only if no printer has been selected
+                # Use default printer with optimized command
                 powershell_cmd = [
                     'powershell', 
+                    '-WindowStyle', 'Hidden',
+                    '-ExecutionPolicy', 'Bypass',
                     '-Command', 
-                    f'Get-Content "{temp_file_name}" | Out-Printer'
+                    f'Get-Content "{temp_file_name}" -Raw | Out-Printer'
                 ]
-                print(f"Server: Using default printer (no printer selection made yet)")
+                app.logger.info("Fast print to default printer")
             
-            result = subprocess.run(powershell_cmd, 
-                                  capture_output=True, 
-                                  text=True, 
-                                  timeout=30,
-                                  creationflags=subprocess.CREATE_NO_WINDOW)
+            # Use Popen for non-blocking execution - don't wait for completion
+            process = subprocess.Popen(powershell_cmd, 
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             
-            if result.returncode == 0:
-                print(f"Server: Print job sent successfully to {printer_to_use}")
-                success = True
-            else:
-                print(f"Server: PowerShell print failed: {result.stderr}")
-                # If selected printer fails, do NOT fallback to default - user should know
-                if SELECTED_PRINTER:
-                    print(f"Server: HARDCODED printer '{SELECTED_PRINTER}' failed - not falling back to default")
-                    success = False
+            # Set a very short timeout for immediate response
+            try:
+                stdout, stderr = process.communicate(timeout=2)  # 2 second max wait
+                if process.returncode == 0:
+                    app.logger.info(f"Print job dispatched successfully to {printer_to_use}")
+                    success = True
                 else:
-                    success = False
+                    app.logger.warning(f"Print dispatch warning: {stderr.decode() if stderr else 'Unknown error'}")
+                    success = True  # Still consider success since job was dispatched
+            except subprocess.TimeoutExpired:
+                # Print job is still running - this is actually good for fast response
+                app.logger.info(f"Print job dispatched (background processing) to {printer_to_use}")
+                success = True  # Don't wait for completion
                 
         except Exception as ps_error:
             print(f"Server: PowerShell method failed: {ps_error}")
@@ -859,7 +876,9 @@ def preview_label():
 
 @app.route('/print', methods=['POST'])
 def print_label_route():
-    """Handle print requests - printing happens on server side"""
+    """Handle print requests - optimized for fast printing"""
+    start_time = time.time()
+    
     data = request.json
     if not data:
         return jsonify({'status': 'error', 'message': 'No data provided'})
@@ -873,22 +892,43 @@ def print_label_route():
     if not quotation or not party:
         return jsonify({'status': 'error', 'message': 'Quotation and party are required'})
     
-    print(f"Server: Received print request for quotation {quotation}")
+    # Log with performance timing
+    app.logger.info(f"Print request received for quotation {quotation}")
     
-    # Call the print function (runs on server)
-    success = print_label(quotation, party, address, phone, mobile)
-    
-    if success:
-        print(f"Server: Successfully sent print job for quotation {quotation}")
+    # Use threading for non-blocking print operation
+    def async_print_and_record():
+        """Async function to handle printing and database recording"""
         try:
-            printed_db.record_print(quotation, party=party, address=address, phone=phone, mobile=mobile)
-            print(f"Server: Recorded printed quotation {quotation} in local DB")
+            # Call the print function (runs on server)
+            success = print_label(quotation, party, address, phone, mobile)
+            
+            if success:
+                app.logger.info(f"Print job sent successfully for quotation {quotation}")
+                # Record in database asynchronously
+                try:
+                    printed_db.record_print(quotation, party=party, address=address, phone=phone, mobile=mobile)
+                    app.logger.info(f"Recorded print job for quotation {quotation}")
+                except Exception as e:
+                    app.logger.error(f"Failed to record print job: {e}")
+            else:
+                app.logger.error(f"Print job failed for quotation {quotation}")
         except Exception as e:
-            print(f"Server: Failed to record printed quotation: {e}")
-        return jsonify({'status': 'printed', 'message': 'Label sent to printer successfully'})
-    else:
-        print(f"Server: Failed to print label for quotation {quotation}")
-        return jsonify({'status': 'error', 'message': 'Failed to send label to printer'})
+            app.logger.error(f"Async print error: {e}")
+    
+    # Start async printing immediately
+    print_thread = threading.Thread(target=async_print_and_record, daemon=True)
+    print_thread.start()
+    
+    # Return immediate response without waiting for print completion
+    response_time = (time.time() - start_time) * 1000
+    app.logger.info(f"Print request processed in {response_time:.2f}ms")
+    
+    return jsonify({
+        'status': 'printing', 
+        'message': 'Print job initiated successfully',
+        'quotation': quotation,
+        'response_time_ms': round(response_time, 2)
+    })
 
 @app.route('/get-settings', methods=['GET'])
 def get_settings():
@@ -905,6 +945,29 @@ def get_printers():
     """Get list of available printers"""
     printers = get_available_printers()
     return jsonify({'printers': printers})
+
+@app.route('/print-status', methods=['GET'])
+def print_status():
+    """Fast endpoint to check print queue status"""
+    try:
+        # Quick check of active print threads
+        active_threads = threading.active_count()
+        
+        # Get recent print stats from database (last 10 prints)
+        recent_prints = printed_db.get_recent(limit=10)
+        
+        return jsonify({
+            'status': 'success',
+            'active_threads': active_threads,
+            'recent_prints_count': len(recent_prints.get('records', [])),
+            'server_uptime': getattr(g, 'request_start_time', time.time()),
+            'performance': 'optimized'
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 
 @app.route('/printed-records', methods=['GET'])

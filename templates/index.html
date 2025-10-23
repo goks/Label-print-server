@@ -1269,9 +1269,11 @@ Tables: ${result.tables_found}`, 'success');
         async function printLabel() {
             if (!currentPartyData) return;
 
+            const startTime = performance.now();
+            
             printStatus.classList.remove('hidden');
             printStatus.className = 'print-status printing';
-            printStatus.innerHTML = '<div class="spinner"></div> Printing on server...';
+            printStatus.innerHTML = '<div class="spinner"></div> Sending to printer...';
             
             document.body.classList.add('printing');
 
@@ -1283,26 +1285,46 @@ Tables: ${result.tables_found}`, 'success');
                 });
 
                 const data = await response.json();
+                const responseTime = (performance.now() - startTime).toFixed(0);
                 
-                if (data.status === 'printed') {
+                if (data.status === 'printing' || data.status === 'printed') {
                     printStatus.className = 'print-status success';
-                    printStatus.innerHTML = '✅ ' + data.message;
+                    printStatus.innerHTML = `✅ Print job sent (${responseTime}ms) - ${data.message}`;
                     
                     // Set flags to track successful print
                     justPrinted = true;
                     lastPrintedQuotation = currentPartyData.quotation;
+                    
+                    // Show performance metrics if available
+                    if (data.response_time_ms) {
+                        console.log(`Server response time: ${data.response_time_ms}ms`);
+                    }
+                    
+                    // Auto-clear input for next quotation after successful print
+                    setTimeout(() => {
+                        quotationInput.value = '';
+                        quotationInput.focus();
+                        currentPartyData = null;
+                        
+                        // Clear preview and results
+                        resultsDiv.classList.add('hidden');
+                        previewDiv.classList.add('hidden');
+                    }, 1500);
+                    
                 } else {
                     printStatus.className = 'print-status error';
                     printStatus.innerHTML = '❌ ' + data.message;
                 }
             } catch (error) {
                 console.error('Print error:', error);
+                const responseTime = (performance.now() - startTime).toFixed(0);
                 printStatus.className = 'print-status error';
-                printStatus.innerHTML = '⚠️ Error sending print job to server';
+                printStatus.innerHTML = `⚠️ Print failed (${responseTime}ms) - Check server connection`;
             }
 
             document.body.classList.remove('printing');
             
+            // Hide status after delay
             setTimeout(() => {
                 printStatus.classList.add('hidden');
             }, 3000);

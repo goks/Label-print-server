@@ -44,23 +44,25 @@ def main():
     print("=" * 60)
     
     try:
-        # Start production server
+        # Start optimized production server for fast printing
         serve(
             production_app,
             host=host,
             port=port,
             threads=threads,
-            # Connection settings
-            connection_limit=1000,
-            cleanup_interval=30,
-            channel_timeout=120,
+            # Optimized connection settings for fast response
+            connection_limit=2000,
+            cleanup_interval=10,  # Faster cleanup for better performance
+            channel_timeout=60,   # Shorter timeout for faster response
+            recv_bytes=65536,     # Larger receive buffer
+            send_bytes=65536,     # Larger send buffer
+            # Async settings for better concurrency
+            asyncore_use_poll=True,
             # Security settings
             expose_tracebacks=False,
-            # Performance settings
-            send_bytes=18000,
             # Logging
             _quiet=False,
-            ident='LabelPrintServer/1.0'
+            ident='LabelPrintServer/2.0-Optimized'
         )
     except KeyboardInterrupt:
         print("\nShutting down Label Print Server...")
