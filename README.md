@@ -118,11 +118,17 @@ The Label Print Server can be configured to start automatically with Windows, ru
 # Complete auto-startup setup (recommended)
 python auto_startup.py setup
 
+# Interactive management menu
+python auto_startup.py menu
+
 # Manual commands
 python auto_startup.py install    # Configure auto-startup
 python auto_startup.py status     # Check current status  
 python auto_startup.py uninstall  # Remove auto-startup
 python auto_startup.py shortcut   # Create desktop shortcut
+
+# Quick removal (with confirmation)
+remove_startup.bat
 ```
 
 ### Tray Application Features
@@ -149,9 +155,36 @@ run_tray.bat
 - **`auto_startup.py`** - Auto-startup installer/manager
 - **`start_tray_silent.vbs`** - Silent startup script (no console)
 - **`run_tray.bat`** - Batch file startup with virtual environment
+- **`remove_startup.bat`** - User-friendly removal script
+- **`setup.bat`** - Complete automated setup
 - **`tray_app.py`** - Main tray application with embedded server
 
-## �📊 Monitoring & Health Checks
+### Managing Auto-Startup
+```powershell
+# Interactive management (recommended for users)
+python auto_startup.py menu
+
+# Check if auto-startup is enabled
+python auto_startup.py status
+
+# Quick removal with confirmation
+remove_startup.bat
+
+# Complete removal and cleanup
+python auto_startup.py uninstall
+```
+
+### GUI Startup Management
+The tray GUI provides user-friendly startup management:
+
+- 🔍 **Real-time Status** - Shows current auto-startup configuration
+- ✅ **Enable Auto-Startup** - One-click Windows boot configuration  
+- ❌ **Disable Auto-Startup** - Easy removal from startup programs
+- 🔄 **Instant Updates** - Status updates automatically every 30 seconds
+- ⚠️ **Error Handling** - Clear error messages and troubleshooting
+- 💡 **Tooltips** - Helpful guidance for each startup option
+
+## 📊 Monitoring & Health Checks
 
 ### Health Check Endpoint
 ```bash
@@ -216,11 +249,15 @@ start_production.bat
 - **Test Connection** - Real-time database connectivity testing
 - **Print History** - View and track all printed labels
 
-### Tray Application
-- **System Tray Icon** - Quick access to server controls
-- **GUI Interface** - User-friendly management interface  
-- **Single Instance** - Prevents multiple server instances
-- **Auto-start** - Optional automatic startup
+### Tray Application & GUI Manager
+- **System Tray Icon** - Quick access to server controls and status
+- **Modern GUI Interface** - Comprehensive management dashboard with:
+  - 🚦 **Server Control** - Start/stop server with visual status indicators
+  - 🚀 **Auto-Startup Management** - Enable/disable Windows boot startup
+  - 📊 **Print History** - View, search, and export printed label records
+  - ⚙️ **Settings Management** - Database and printer configuration
+  - 🔒 **Single Instance Protection** - Prevents multiple server instances
+  - 📱 **System Tray Integration** - Minimize to tray, quick restore
 
 ## 🔧 Development
 

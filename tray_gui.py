@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import tempfile
+import winreg
 
 
 # Modern GUI for controlling the Label Print Server
@@ -422,6 +423,9 @@ class TrayGUI(tk.Tk):
         # Control buttons section
         self.create_control_section(main_container)
         
+        # Startup management section
+        self.create_startup_section(main_container)
+        
         # Search and filters section
         self.create_search_section(main_container)
         
@@ -494,6 +498,117 @@ class TrayGUI(tk.Tk):
                                                  self.quit_requested, 'secondary')
         self.quit_btn.pack(side='right')
         self.create_tooltip(self.quit_btn, "Quit the application")
+
+    def create_startup_section(self, parent):
+        """Create startup management section with status and controls"""
+        startup_frame = tk.Frame(parent, bg='#ffffff', relief='solid', bd=1)
+        startup_frame.pack(fill='x', pady=(0, 20), ipady=10)
+        
+        # Left side - Status display
+        status_frame = tk.Frame(startup_frame, bg='#ffffff')
+        status_frame.pack(side='left', padx=20)
+        
+        # Startup status label
+        startup_label = tk.Label(status_frame, text="🚀 Auto-Startup:", 
+                                font=('Arial', 10, 'bold'), bg='#ffffff', fg='#495057')
+        startup_label.pack(side='left')
+        
+        # Status indicator
+        self.startup_status_label = tk.Label(status_frame, text="Checking...", 
+                                            font=('Arial', 10), bg='#ffffff', fg='#666')
+        self.startup_status_label.pack(side='left', padx=(10, 0))
+        
+        # Right side - Control buttons
+        controls_frame = tk.Frame(startup_frame, bg='#ffffff')
+        controls_frame.pack(side='right', padx=20)
+        
+        self.enable_startup_btn = self.create_modern_button(controls_frame, "✅ Enable Auto-Startup", 
+                                                           self.enable_startup, 'success')
+        self.enable_startup_btn.pack(side='right', padx=(10, 0))
+        self.create_tooltip(self.enable_startup_btn, "Configure app to start automatically with Windows")
+        
+        self.disable_startup_btn = self.create_modern_button(controls_frame, "❌ Disable Auto-Startup", 
+                                                            self.disable_startup, 'danger')
+        self.disable_startup_btn.pack(side='right')
+        self.create_tooltip(self.disable_startup_btn, "Remove app from Windows startup")
+        
+        # Check startup status immediately
+        self.check_startup_status()
+
+    def check_startup_status(self):
+        """Check if the application is configured for auto-startup"""
+        try:
+            startup_key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+            app_name = "Label Print Server"
+            
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_key, 0, winreg.KEY_READ) as key:
+                try:
+                    value, reg_type = winreg.QueryValueEx(key, app_name)
+                    self.startup_status_label.config(text="✅ Enabled", fg='#28a745')
+                    self.enable_startup_btn.config(state='disabled')
+                    self.disable_startup_btn.config(state='normal')
+                    return True
+                except FileNotFoundError:
+                    self.startup_status_label.config(text="❌ Disabled", fg='#dc3545')
+                    self.enable_startup_btn.config(state='normal')
+                    self.disable_startup_btn.config(state='disabled')
+                    return False
+        except Exception as e:
+            self.startup_status_label.config(text="❓ Error", fg='#ffc107')
+            print(f"Error checking startup status: {e}")
+            return False
+
+    def enable_startup(self):
+        """Enable auto-startup configuration"""
+        try:
+            # Get the path to the silent startup script
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            vbs_file = os.path.join(app_dir, "start_tray_silent.vbs")
+            
+            if not os.path.exists(vbs_file):
+                messagebox.showerror("Error", 
+                    "start_tray_silent.vbs not found!\n"
+                    "Please ensure all startup files are present.")
+                return
+            
+            startup_command = f'wscript.exe "{vbs_file}"'
+            startup_key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+            app_name = "Label Print Server"
+            
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_key, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, startup_command)
+            
+            messagebox.showinfo("Success", 
+                "Auto-startup enabled successfully!\n\n"
+                "The Label Print Server will now start automatically when Windows boots.\n"
+                "The tray icon will appear in the system tray.")
+            
+            self.check_startup_status()  # Refresh status
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to enable auto-startup:\n{str(e)}")
+
+    def disable_startup(self):
+        """Disable auto-startup configuration"""
+        try:
+            startup_key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+            app_name = "Label Print Server"
+            
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_key, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, app_name)
+            
+            messagebox.showinfo("Success", 
+                "Auto-startup disabled successfully!\n\n"
+                "The Label Print Server will no longer start automatically with Windows.\n"
+                "You can still start it manually using the desktop shortcut or this GUI.")
+            
+            self.check_startup_status()  # Refresh status
+            
+        except FileNotFoundError:
+            messagebox.showinfo("Info", "Auto-startup was not configured.")
+            self.check_startup_status()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to disable auto-startup:\n{str(e)}")
 
     def create_modern_button(self, parent, text, command, button_type='default', **kwargs):
         """Create a modern button with proper styling and contrast"""
@@ -907,6 +1022,18 @@ Network: Designed for local network deployment"""
                 self.stop_btn.config(state='disabled')
         except Exception:
             pass
+
+        # Update startup status periodically (every 30 seconds)
+        if not hasattr(self, '_startup_check_counter'):
+            self._startup_check_counter = 0
+        
+        self._startup_check_counter += 1
+        if self._startup_check_counter >= 10:  # Check every 30 seconds (10 * 3 seconds)
+            self._startup_check_counter = 0
+            try:
+                self.check_startup_status()
+            except Exception:
+                pass  # Ignore errors in startup status check
 
         # Schedule next update - use longer interval to reduce load
         self.after(3000, self.update_status)

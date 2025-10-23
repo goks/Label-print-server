@@ -110,13 +110,20 @@ class AutoStartupManager:
 
 def main():
     if len(sys.argv) < 2:
-        print("Label Print Server - Auto-Startup Manager")
-        print("\nUsage:")
+        print("=" * 50)
+        print("    Label Print Server - Auto-Startup Manager")
+        print("=" * 50)
+        print("\n📋 Available Commands:")
         print("  python auto_startup.py install    # Configure auto-startup on boot")
         print("  python auto_startup.py uninstall  # Remove auto-startup")  
         print("  python auto_startup.py status     # Check current status")
         print("  python auto_startup.py shortcut   # Create desktop shortcut")
         print("  python auto_startup.py setup      # Complete setup (install + shortcut)")
+        print("  python auto_startup.py menu       # Interactive menu")
+        print("\n💡 Quick Options:")
+        print("  • For complete setup: python auto_startup.py setup")
+        print("  • For removal: remove_startup.bat")
+        print("  • For interactive mode: python auto_startup.py menu")
         return
     
     manager = AutoStartupManager()
@@ -150,10 +157,103 @@ def main():
             print("   • Server runs in background when tray icon is present")
             print("   • Use desktop shortcut for manual startup")
             print("   • Access web interface at: http://localhost:5000")
+            
+    elif command == "menu":
+        show_interactive_menu(manager)
         
     else:
         print(f"Unknown command: {command}")
         print("Use 'python auto_startup.py' for usage information")
+
+def show_interactive_menu(manager):
+    """Show interactive menu for auto-startup management"""
+    while True:
+        print("\n" + "=" * 50)
+        print("    Label Print Server - Auto-Startup Manager")
+        print("=" * 50)
+        
+        # Check current status
+        print("\n📊 Current Status:")
+        is_configured = manager.check_startup_status()
+        
+        print("\n📋 Available Options:")
+        if not is_configured:
+            print("  1. ✅ Install auto-startup (start with Windows)")
+            print("  2. 🖥️ Create desktop shortcut")
+            print("  3. 🚀 Complete setup (install + shortcut)")
+        else:
+            print("  1. ❌ Remove auto-startup")
+            print("  2. 🖥️ Create/update desktop shortcut")
+            print("  3. 🔄 Reinstall auto-startup")
+        
+        print("  4. 📊 Check status")
+        print("  5. ❓ Help")
+        print("  0. 🚪 Exit")
+        
+        choice = input("\n👆 Enter your choice (0-5): ").strip()
+        
+        if choice == "0":
+            print("\n👋 Goodbye!")
+            break
+        elif choice == "1":
+            if not is_configured:
+                manager.install_startup()
+            else:
+                confirm = input("\n⚠️  Remove auto-startup? Type 'yes' to confirm: ").strip().lower()
+                if confirm == "yes":
+                    manager.uninstall_startup()
+                else:
+                    print("❌ Operation cancelled")
+        elif choice == "2":
+            manager.create_desktop_shortcut()
+        elif choice == "3":
+            if not is_configured:
+                print("\n🚀 Running complete setup...")
+                if manager.install_startup():
+                    manager.create_desktop_shortcut()
+                    print("\n🎉 Complete setup finished!")
+            else:
+                print("\n🔄 Reinstalling auto-startup...")
+                manager.uninstall_startup()
+                manager.install_startup()
+        elif choice == "4":
+            print("\n📊 Checking status...")
+            manager.check_startup_status()
+        elif choice == "5":
+            show_help()
+        else:
+            print("❌ Invalid choice. Please enter 0-5.")
+
+def show_help():
+    """Show help information"""
+    print("\n" + "=" * 50)
+    print("    📖 Help - Auto-Startup Manager")
+    print("=" * 50)
+    print("\n🎯 Purpose:")
+    print("   Configure Label Print Server to start automatically with Windows")
+    print("   and appear as a tray icon for easy access.")
+    
+    print("\n⚙️ How It Works:")
+    print("   • Adds registry entry to Windows startup")
+    print("   • Uses silent VBS script (no console window)")
+    print("   • Starts tray application with embedded server")
+    print("   • Server available at http://localhost:5000")
+    
+    print("\n📁 Files Created:")
+    print("   • Registry: HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run")
+    print("   • Shortcut: Desktop\\Label Print Server.lnk")
+    
+    print("\n🔧 Manual Control:")
+    print("   • Start: start_tray_silent.vbs")
+    print("   • Remove: remove_startup.bat")
+    print("   • Status: python auto_startup.py status")
+    
+    print("\n🆘 Troubleshooting:")
+    print("   • If tray doesn't appear: Check Windows notifications")
+    print("   • If server doesn't start: Check .env configuration")
+    print("   • For errors: Check logs/ directory")
+    
+    input("\nPress Enter to return to menu...")
 
 if __name__ == "__main__":
     main()
