@@ -747,7 +747,35 @@ class TrayGUI(tk.Tk):
         version = self.available_update.get('version', 'Unknown')
         changelog = self.available_update.get('changelog', 'No changelog available.')
         
+        # Show information dialog instead of installing
+        message = f"Update to version {version} is available!\n\n"
+        if changelog:
+            # Limit changelog length for dialog
+            if len(changelog) > 300:
+                changelog = changelog[:300] + "..."
+            message += f"Changes:\n{changelog}\n\n"
+        
+        message += "⚠️ Automatic update installation is currently disabled.\n\n"
+        message += "To update manually:\n"
+        message += "1. Download the latest release from GitHub\n"
+        message += "2. Stop the Label Print Server\n"
+        message += "3. Extract and replace files\n"
+        message += "4. Restart the application\n\n"
+        message += "Would you like to open the GitHub releases page?"
+        
+        if messagebox.askyesno("Update Available", message):
+            # Open GitHub releases page
+            import webbrowser
+            repo = "goks/Label-print-server"  # Default repo
+            if self.update_manager and hasattr(self.update_manager, 'github_repo'):
+                repo = self.update_manager.github_repo
+            webbrowser.open(f"https://github.com/{repo}/releases")
+        
+        return
+        
+        # OLD AUTOMATIC UPDATE CODE - DISABLED FOR NOW
         # Show confirmation dialog
+        """
         message = f"Install update to version {version}?\n\n"
         if changelog:
             # Limit changelog length for dialog
@@ -775,6 +803,7 @@ class TrayGUI(tk.Tk):
                 self.after(0, lambda: self.installation_complete({'status': 'error', 'message': str(e)}))
         
         threading.Thread(target=background_install, daemon=True).start()
+        """
 
     def installation_complete(self, result):
         """Handle installation completion"""

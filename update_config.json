@@ -1,0 +1,9 @@
+{
+  "auto_check": true,
+  "auto_install": false,
+  "check_interval_hours": 24,
+  "last_check": "2025-11-15T18:52:08.526278",
+  "update_channel": "stable",
+  "backup_enabled": true,
+  "notification_enabled": true
+}

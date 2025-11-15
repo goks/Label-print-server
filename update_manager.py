@@ -275,6 +275,7 @@ class UpdateManager:
     
     def install_update(self, download_path, update_info):
         """Install the downloaded update"""
+        backup_path = None  # Initialize backup_path
         try:
             version_str = update_info["version"]
             self.logger.info(f"Installing update {version_str}")
@@ -385,18 +386,22 @@ class UpdateManager:
     def stop_services(self):
         """Stop running services before update"""
         try:
-            # Signal tray app to quit
+            # Signal tray app to quit via Flask API
+            try:
+                requests.post("http://localhost:5000/shutdown", 
+                             json={"token": "local-shutdown"},
+                             timeout=5)
+            except:
+                pass  # Server might not be running or already stopped
+            
+            # Also use signal file as backup
             quit_signal_file = self.app_dir / ".tray_quit_signal"
             quit_signal_file.touch()
             
-            # Wait a moment for graceful shutdown
-            time.sleep(2)
+            # Wait for graceful shutdown
+            time.sleep(3)
             
-            # Force kill if still running
-            subprocess.run(["taskkill", "/F", "/IM", "python.exe"], 
-                          capture_output=True, check=False)
-            
-            self.logger.info("Services stopped for update")
+            self.logger.info("Services signaled to stop for update")
         except Exception as e:
             self.logger.error(f"Error stopping services: {e}")
     
