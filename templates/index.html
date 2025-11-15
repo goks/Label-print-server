@@ -859,6 +859,28 @@
         </div>
     </div>
 
+    <!-- Copy Count Modal -->
+    <div id="copyCountModal" class="modal">
+        <div class="modal-content">
+            <span class="close" id="copyCountClose">&times;</span>
+            <h3>🖨️ How Many Copies?</h3>
+            
+            <div class="form-group">
+                <label for="copyCount">Number of Copies:</label>
+                <input type="number" id="copyCount" min="1" max="100" value="1" 
+                       placeholder="Enter number of copies" autofocus>
+                <small class="help-text">
+                    💡 Each copy will be numbered sequentially (e.g., "1 of 3", "2 of 3", "3 of 3")
+                </small>
+            </div>
+            
+            <div class="btn-group">
+                <button class="btn btn-secondary" id="cancelCopies">❌ Cancel</button>
+                <button class="btn btn-success" id="confirmCopies">🖨️ Print Labels</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentPartyData = null;
         let lastPrintedQuotation = null;
@@ -886,6 +908,13 @@
         const closePreviewBtn = document.getElementById('closePreview');
         const printFromPreviewBtn = document.getElementById('printFromPreview');
 
+        // Copy count modal elements
+        const copyCountModal = document.getElementById('copyCountModal');
+        const copyCountClose = document.getElementById('copyCountClose');
+        const cancelCopiesBtn = document.getElementById('cancelCopies');
+        const confirmCopiesBtn = document.getElementById('confirmCopies');
+        const copyCountInput = document.getElementById('copyCount');
+
         // Settings modal handlers
         settingsBtn.onclick = async function() {
             await loadCurrentSettings();
@@ -903,6 +932,9 @@
             }
             if (event.target == previewModal) {
                 previewModal.style.display = 'none';
+            }
+            if (event.target == copyCountModal) {
+                copyCountModal.style.display = 'none';
             }
         }
 
@@ -948,6 +980,33 @@
             previewModal.style.display = 'none';
             printLabel();
         }
+
+        // Copy count modal handlers
+        copyCountClose.onclick = function() {
+            copyCountModal.style.display = 'none';
+        }
+
+        cancelCopiesBtn.onclick = function() {
+            copyCountModal.style.display = 'none';
+        }
+
+        confirmCopiesBtn.onclick = function() {
+            const copies = parseInt(copyCountInput.value) || 0;
+            if (copies > 0) {
+                copyCountModal.style.display = 'none';
+                printLabel(copies);
+            } else {
+                alert('Please enter a valid number of copies (1 or more)');
+            }
+        }
+
+        // Handle Enter key in copy count input
+        copyCountInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                confirmCopiesBtn.click();
+            }
+        });
 
         // Load current settings
         async function loadCurrentSettings() {
@@ -1168,7 +1227,11 @@ Tables: ${result.tables_found}`, 'success');
             if (e.key === 'Enter') {
                 e.preventDefault();
                 if (currentPartyData) {
-                    printLabel();
+                    // Show copy count dialog
+                    copyCountInput.value = '1';
+                    copyCountModal.style.display = 'block';
+                    copyCountInput.focus();
+                    copyCountInput.select();
                 }
             }
         });
@@ -1266,14 +1329,19 @@ Tables: ${result.tables_found}`, 'success');
             }
         }
 
-        async function printLabel() {
+        async function printLabel(copies = 1) {
             if (!currentPartyData) return;
 
             const startTime = performance.now();
             
             printStatus.classList.remove('hidden');
             printStatus.className = 'print-status printing';
-            printStatus.innerHTML = '<div class="spinner"></div> Sending to printer...';
+            
+            if (copies > 1) {
+                printStatus.innerHTML = `<div class="spinner"></div> Sending ${copies} copies to printer...`;
+            } else {
+                printStatus.innerHTML = '<div class="spinner"></div> Sending to printer...';
+            }
             
             document.body.classList.add('printing');
 
@@ -1281,7 +1349,10 @@ Tables: ${result.tables_found}`, 'success');
                 const response = await fetch('/print', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(currentPartyData)
+                    body: JSON.stringify({
+                        ...currentPartyData,
+                        copies: copies
+                    })
                 });
 
                 const data = await response.json();
@@ -1289,7 +1360,11 @@ Tables: ${result.tables_found}`, 'success');
                 
                 if (data.status === 'printing' || data.status === 'printed') {
                     printStatus.className = 'print-status success';
-                    printStatus.innerHTML = `✅ Print job sent (${responseTime}ms) - ${data.message}`;
+                    if (copies > 1) {
+                        printStatus.innerHTML = `✅ ${copies} copies sent (${responseTime}ms) - ${data.message}`;
+                    } else {
+                        printStatus.innerHTML = `✅ Print job sent (${responseTime}ms) - ${data.message}`;
+                    }
                     
                     // Set flags to track successful print
                     justPrinted = true;
