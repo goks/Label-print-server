@@ -13,6 +13,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import pyodbc
 import subprocess
 from dotenv import load_dotenv
+from functools import lru_cache
+from queue import Queue, Empty
 load_dotenv()
 
 import printed_db
@@ -26,6 +28,85 @@ class Config:
     REQUEST_TIMEOUT = 60
     LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
     ENVIRONMENT = os.environ.get('FLASK_ENV', 'production')
+    # Connection pool settings
+    DB_POOL_SIZE = int(os.environ.get('DB_POOL_SIZE', '5'))
+    DB_POOL_TIMEOUT = int(os.environ.get('DB_POOL_TIMEOUT', '30'))
+
+# Database Connection Pool
+class DatabaseConnectionPool:
+    """Thread-safe connection pool for SQL Server"""
+    def __init__(self, pool_size=5):
+        self.pool_size = pool_size
+        self.pool = Queue(maxsize=pool_size)
+        self.lock = threading.Lock()
+        self.active_connections = 0
+        self.conn_string = None
+        
+    def initialize(self, conn_string):
+        """Initialize the connection pool with a connection string"""
+        self.conn_string = conn_string
+        # Pre-create connections
+        for _ in range(self.pool_size):
+            try:
+                conn = pyodbc.connect(conn_string)
+                self.pool.put(conn)
+                self.active_connections += 1
+            except Exception as e:
+                print(f"Failed to create pooled connection: {e}")
+                break
+    
+    def get_connection(self, timeout=30):
+        """Get a connection from the pool"""
+        try:
+            conn = self.pool.get(timeout=timeout)
+            # Test if connection is still valid
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+                return conn
+            except:
+                # Connection is stale, create a new one
+                try:
+                    conn.close()
+                except:
+                    pass
+                if self.conn_string:
+                    conn = pyodbc.connect(self.conn_string)
+                    return conn
+                else:
+                    raise Exception("Connection pool not initialized")
+        except Empty:
+            # Pool is empty, create a temporary connection
+            if self.conn_string:
+                return pyodbc.connect(self.conn_string)
+            else:
+                raise Exception("Connection pool not initialized and no connection string available")
+    
+    def return_connection(self, conn):
+        """Return a connection to the pool"""
+        try:
+            # Try to return to pool, but don't block if full
+            self.pool.put_nowait(conn)
+        except:
+            # Pool is full, close the connection
+            try:
+                conn.close()
+            except:
+                pass
+    
+    def close_all(self):
+        """Close all connections in the pool"""
+        while not self.pool.empty():
+            try:
+                conn = self.pool.get_nowait()
+                conn.close()
+            except:
+                pass
+
+# Global connection pool
+db_pool = DatabaseConnectionPool(pool_size=Config.DB_POOL_SIZE)
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -204,12 +285,40 @@ SETTINGS_FILE = 'db_settings.json'
 SELECTED_PRINTER = None  # Will store the selected printer name
 BARTENDER_TEMPLATE = None  # Will store the BarTender template path
 
+# Settings cache with lock for thread-safety
+_settings_cache = {
+    'server': None,
+    'database': None,
+    'printer': None,
+    'bartender_template': None,
+    'last_loaded': None
+}
+_settings_lock = threading.Lock()
+
+# Printer list cache
+_printer_cache = {
+    'printers': None,
+    'last_updated': None,
+    'ttl': 60  # Cache printers for 60 seconds
+}
+_printer_cache_lock = threading.Lock()
+
 # Update system globals
 update_manager = None
 update_checker = None
 
 def get_available_printers():
-    """Get list of available printers on Windows"""
+    """Get list of available printers on Windows with caching"""
+    global _printer_cache
+    
+    # Check cache first
+    with _printer_cache_lock:
+        if _printer_cache['printers'] is not None and _printer_cache['last_updated'] is not None:
+            cache_age = time.time() - _printer_cache['last_updated']
+            if cache_age < _printer_cache['ttl']:
+                return _printer_cache['printers']
+    
+    # Cache miss or expired, fetch printers
     try:
         # Use PowerShell to get printer list
         powershell_cmd = [
@@ -227,6 +336,12 @@ def get_available_printers():
         if result.returncode == 0:
             printers = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
             print(f"Server: Found {len(printers)} printers: {printers}")
+            
+            # Update cache
+            with _printer_cache_lock:
+                _printer_cache['printers'] = printers
+                _printer_cache['last_updated'] = time.time()
+            
             return printers
         else:
             print(f"Server: Failed to get printers: {result.stderr}")
@@ -237,9 +352,20 @@ def get_available_printers():
         return []
 
 def load_db_settings():
-    """Load database settings from file or environment variables"""
-    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE
+    """Load database settings from file or environment variables with caching"""
+    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE, _settings_cache
     
+    # Check if settings are already cached in memory
+    with _settings_lock:
+        if _settings_cache['last_loaded'] is not None:
+            # Return cached values
+            DB_SERVER = _settings_cache['server']
+            DB_NAME = _settings_cache['database']
+            SELECTED_PRINTER = _settings_cache['printer']
+            BARTENDER_TEMPLATE = _settings_cache['bartender_template']
+            return
+    
+    # Load from file if not cached
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r') as f:
@@ -248,14 +374,23 @@ def load_db_settings():
                 DB_NAME = settings.get('database', DB_NAME)
                 SELECTED_PRINTER = settings.get('printer', None)
                 BARTENDER_TEMPLATE = settings.get('bartender_template', None)
+                
+                # Update cache
+                with _settings_lock:
+                    _settings_cache['server'] = DB_SERVER
+                    _settings_cache['database'] = DB_NAME
+                    _settings_cache['printer'] = SELECTED_PRINTER
+                    _settings_cache['bartender_template'] = BARTENDER_TEMPLATE
+                    _settings_cache['last_loaded'] = time.time()
+                
                 print(f"Server: Loaded settings - Server: {DB_SERVER}, DB: {DB_NAME}, Printer: {SELECTED_PRINTER}")
                 print(f"Server: BarTender Template: {BARTENDER_TEMPLATE}")
         except Exception as e:
             print(f"Error loading settings: {e}")
 
 def save_db_settings(server, database, printer=None, bartender_template=None):
-    """Save database, printer and BarTender settings to file"""
-    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE
+    """Save database, printer and BarTender settings to file and update cache"""
+    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE, _settings_cache
     
     try:
         settings = {
@@ -267,11 +402,18 @@ def save_db_settings(server, database, printer=None, bartender_template=None):
         with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f)
         
-        # Update global variables
-        DB_SERVER = server
-        DB_NAME = database
-        SELECTED_PRINTER = printer
-        BARTENDER_TEMPLATE = bartender_template
+        # Update global variables and cache atomically
+        with _settings_lock:
+            DB_SERVER = server
+            DB_NAME = database
+            SELECTED_PRINTER = printer
+            BARTENDER_TEMPLATE = bartender_template
+            _settings_cache['server'] = server
+            _settings_cache['database'] = database
+            _settings_cache['printer'] = printer
+            _settings_cache['bartender_template'] = bartender_template
+            _settings_cache['last_loaded'] = time.time()
+        
         print(f"Server: Saved settings - Server: {server}, DB: {database}, Printer: {printer}")
         print(f"Server: BarTender Template: {bartender_template}")
         return True
@@ -328,14 +470,21 @@ for line in startup_msg:
                     app.logger.name, logging.INFO, __file__, 0, line, (), None
                 ))
 
-def get_party_info(quotation_number):
-    """Look up customer information from database with comprehensive logging"""
+# LRU cache for quotation lookups (cache up to 100 recent lookups for 5 minutes)
+@lru_cache(maxsize=100)
+def _get_party_info_cached(quotation_number, cache_key):
+    """Internal cached function for party info lookup - cache_key forces cache refresh"""
+    return _get_party_info_impl(quotation_number)
+
+def _get_party_info_impl(quotation_number):
+    """Implementation of party info lookup with connection pooling"""
     start_time = time.time()
     
     # Format quotation number as 25-character string with 'G-' prefix, right-aligned
     formatted_vch_no = f"G-{quotation_number}".rjust(25)
     
-    db_logger.info('Database lookup started: quotation=%s, formatted=%s', quotation_number, formatted_vch_no)
+    if Config.LOG_LEVEL == 'DEBUG':
+        db_logger.debug('Database lookup started: quotation=%s, formatted=%s', quotation_number, formatted_vch_no)
     
     # Check if database settings are configured
     if not DB_SERVER or not DB_NAME:
@@ -346,12 +495,9 @@ def get_party_info(quotation_number):
     available_drivers = pyodbc.drivers()
     driver = None
     
-    db_logger.debug('Available ODBC drivers: %s', available_drivers)
-    
     # Prioritize drivers and use appropriate authentication
     if 'ODBC Driver 18 for SQL Server' in available_drivers:
         driver = 'ODBC Driver 18 for SQL Server'
-        # ODBC Driver 18 requires specific authentication syntax
         conn_str = (
             f"DRIVER={{{driver}}};"
             f"SERVER={DB_SERVER};"
@@ -382,122 +528,125 @@ def get_party_info(quotation_number):
         db_logger.error('No SQL Server ODBC drivers found. Available drivers: %s', available_drivers)
         return None
     
-    db_logger.debug('Using driver: %s', driver)
+    # Initialize connection pool if needed
+    if db_pool.conn_string != conn_str:
+        db_pool.close_all()
+        db_pool.initialize(conn_str)
     
     conn = None
+    use_pool = True
+    
     try:
         connection_start = time.time()
-        conn = pyodbc.connect(conn_str)
-        connection_time = time.time() - connection_start
-        db_logger.debug('Database connection established in %.2f seconds', connection_time)
+        
+        # Try to get connection from pool
+        try:
+            conn = db_pool.get_connection(timeout=5)
+            connection_time = time.time() - connection_start
+            if Config.LOG_LEVEL == 'DEBUG':
+                db_logger.debug('Got pooled connection in %.3f seconds', connection_time)
+        except:
+            # Fallback to direct connection if pool fails
+            conn = pyodbc.connect(conn_str)
+            use_pool = False
+            connection_time = time.time() - connection_start
+            db_logger.warning('Used direct connection (pool unavailable) in %.3f seconds', connection_time)
+        
         cursor = conn.cursor()
         
-        # Step 1: Get MasterCode from Tran2 table
+        # Optimized: Use a single JOIN query instead of 3 sequential queries
         query_start = time.time()
-        query1 = "SELECT CM1 FROM dbo.Tran2 WHERE VchType='26' AND MasterCode2='201' AND VchNo=?"
-        db_logger.debug('Executing query 1: %s with parameter: %s', query1, formatted_vch_no)
-        cursor.execute(query1, formatted_vch_no)
-        tran_row = cursor.fetchone()
-        query1_time = time.time() - query_start
+        optimized_query = """
+            SELECT 
+                m.Name, m.Code,
+                a.Address1, a.Address2, a.Address3, a.Address4,
+                a.Telno, a.Mobile
+            FROM dbo.Tran2 t
+            INNER JOIN Master1 m ON t.CM1 = m.Code AND m.MasterType = 2
+            LEFT JOIN MasterAddressInfo a ON m.Code = a.MasterCode
+            WHERE t.VchType = '26' AND t.MasterCode2 = '201' AND t.VchNo = ?
+        """
         
-        if not tran_row or not tran_row.CM1:
-            db_logger.info('No quotation found for %s (query completed in %.2fs)', quotation_number, query1_time)
+        if Config.LOG_LEVEL == 'DEBUG':
+            db_logger.debug('Executing optimized query with parameter: %s', formatted_vch_no)
+        
+        cursor.execute(optimized_query, formatted_vch_no)
+        row = cursor.fetchone()
+        query_time = time.time() - query_start
+        
+        if not row:
+            if Config.LOG_LEVEL == 'DEBUG':
+                db_logger.info('No quotation found for %s (query completed in %.3fs)', quotation_number, query_time)
             return None
-            
-        master_code = tran_row.CM1
-        db_logger.debug('Found master code: %s (query completed in %.2fs)', master_code, query1_time)
         
-        # Step 2: Get shop name from Master1 table
-        query_start = time.time()
-        query2 = "SELECT Name, Code FROM Master1 WHERE MasterType=2 AND Code=?"
-        db_logger.debug('Executing query 2: %s with parameter: %s', query2, master_code)
-        cursor.execute(query2, master_code)
-        master_row = cursor.fetchone()
-        query2_time = time.time() - query_start
-        
-        if not master_row:
-            db_logger.warning('No customer found for master code %s (query completed in %.2fs)', master_code, query2_time)
-            return None
-            
-        shop_name = master_row.Name
-        db_logger.debug('Found shop name: %s (query completed in %.2fs)', shop_name, query2_time)
-        
-        # Step 3: Get address information from MasterAddressInfo table
-        query_start = time.time()
-        query3 = "SELECT Address1, Address2, Address3, Address4, Telno, Mobile FROM MasterAddressInfo WHERE MasterCode=?"
-        db_logger.debug('Executing query 3: %s with parameter: %s', query3, master_code)
-        cursor.execute(query3, master_code)
-        address_row = cursor.fetchone()
-        query3_time = time.time() - query_start
-        db_logger.debug('Address query completed in %.2fs', query3_time)
-        
-        # Compile party information
+        # Compile party information from single query result
         party_info = {
-            'name': shop_name,
-            'code': master_code,
-            'address1': address_row.Address1 if address_row else '',
-            'address2': address_row.Address2 if address_row else '',
-            'address3': address_row.Address3 if address_row else '',
-            'address4': address_row.Address4 if address_row else '',
-            'phone': address_row.Telno if address_row else '',
-            'mobile': address_row.Mobile if address_row else ''
+            'name': row.Name if row.Name else '',
+            'code': row.Code if row.Code else '',
+            'address1': row.Address1 if row.Address1 else '',
+            'address2': row.Address2 if row.Address2 else '',
+            'address3': row.Address3 if row.Address3 else '',
+            'address4': row.Address4 if row.Address4 else '',
+            'phone': row.Telno if row.Telno else '',
+            'mobile': row.Mobile if row.Mobile else ''
         }
         
         total_time = time.time() - start_time
-        db_logger.info('Successfully retrieved customer info for quotation %s in %.2fs: %s', 
-                      quotation_number, total_time, shop_name)
+        db_logger.info('Retrieved customer info for quotation %s in %.3fs: %s', 
+                      quotation_number, total_time, party_info['name'])
         
         return party_info
         
     except pyodbc.Error as e:
         error_code = e.args[0] if e.args else 'Unknown'
         error_msg = e.args[1] if len(e.args) > 1 else str(e)
-        
         elapsed_time = time.time() - start_time
         
         # Log detailed error information
         db_logger.error(
-            'Database error for quotation %s (%.2fs): Code=%s, Message=%s, Driver=%s',
-            quotation_number, elapsed_time, error_code, error_msg, driver
+            'Database error for quotation %s (%.3fs): Code=%s, Message=%s',
+            quotation_number, elapsed_time, error_code, error_msg
         )
         
         # Provide specific error messages based on error codes
         if error_code in ['08001', '08S01']:
             db_logger.error('Network connectivity issue to SQL Server %s', DB_SERVER)
-            app.logger.error("Database connection error: Cannot reach SQL Server '%s'", DB_SERVER)
         elif error_code == '18456':
             db_logger.error('Authentication failed for database %s', DB_NAME)
-            app.logger.error("Database authentication error: Access denied to '%s' database", DB_NAME)
         elif error_code == '28000':
             db_logger.error('Login failed - likely authentication method issue')
-            app.logger.error("Database login failed: Check Windows Authentication configuration")
         elif error_code == 'IM002':
             db_logger.error('ODBC driver compatibility issue')
-            app.logger.error("Database driver error: ODBC driver not found or incompatible")
         else:
             db_logger.error('Unhandled database error: %s', error_msg)
-            app.logger.error("Database error (%s): %s", error_code, error_msg)
-            
+        
         return None
         
     except Exception as e:
         elapsed_time = time.time() - start_time
         db_logger.error(
-            'Unexpected database error for quotation %s (%.2fs): %s',
+            'Unexpected database error for quotation %s (%.3fs): %s',
             quotation_number, elapsed_time, str(e), exc_info=True
         )
-        app.logger.error('Unexpected database error: %s', str(e), exc_info=True)
         return None
         
     finally:
         if conn:
             try:
-                close_start = time.time()
-                conn.close()
-                close_time = time.time() - close_start
-                db_logger.debug('Database connection closed in %.3fs', close_time)
+                if use_pool:
+                    # Return connection to pool
+                    db_pool.return_connection(conn)
+                else:
+                    # Close direct connection
+                    conn.close()
             except Exception as close_error:
-                db_logger.warning('Error closing database connection: %s', close_error)
+                db_logger.warning('Error handling connection cleanup: %s', close_error)
+
+def get_party_info(quotation_number):
+    """Look up customer information from database with caching and connection pooling"""
+    # Use cache with 5-minute TTL (cache_key changes every 5 minutes)
+    cache_key = int(time.time() / 300)  # 300 seconds = 5 minutes
+    return _get_party_info_cached(quotation_number, cache_key)
 
 def format_label(quotation, party_info):
     """Format label with crisp 5-line layout"""

@@ -1,12 +1,23 @@
 import sqlite3
 import os
+import threading
 from datetime import datetime, timezone
 
 DB_FILE = os.path.join(os.path.dirname(__file__), 'printed_records.db')
 
+# Thread-local storage for database connections
+_thread_local = threading.local()
+
+def _get_connection():
+    """Get a thread-local database connection (connection reuse per thread)"""
+    if not hasattr(_thread_local, 'connection') or _thread_local.connection is None:
+        _thread_local.connection = sqlite3.connect(DB_FILE, check_same_thread=False)
+        _thread_local.connection.row_factory = sqlite3.Row
+    return _thread_local.connection
+
 def init_db():
     """Initialize the SQLite database and table if not exists."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = _get_connection()
     try:
         cur = conn.cursor()
         cur.execute('''
@@ -20,13 +31,21 @@ def init_db():
                 printed_at TEXT NOT NULL
             )
         ''')
+        # Create index for faster searches
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_quotation ON printed(quotation)
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_printed_at ON printed(printed_at DESC)
+        ''')
         conn.commit()
-    finally:
-        conn.close()
+    except Exception as e:
+        conn.rollback()
+        raise
 
 def record_print(quotation, party=None, address=None, phone=None, mobile=None):
     """Record a printed quotation entry."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = _get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -35,11 +54,13 @@ def record_print(quotation, party=None, address=None, phone=None, mobile=None):
         )
         conn.commit()
         return cur.lastrowid
-    finally:
-        conn.close()
+    except Exception as e:
+        conn.rollback()
+        raise
 
 def get_recent(limit=100, q=None, offset=0):
-    conn = sqlite3.connect(DB_FILE)
+    """Get recent printed records with optimized query"""
+    conn = _get_connection()
     try:
         cur = conn.cursor()
         if q:
@@ -73,5 +94,6 @@ def get_recent(limit=100, q=None, offset=0):
             for r in rows
         ]
         return {'total': total, 'records': result}
-    finally:
-        conn.close()
+    except Exception as e:
+        raise
+
