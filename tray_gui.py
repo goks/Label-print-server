@@ -1823,37 +1823,44 @@ def check_single_instance_gui():
                     handle = ctypes.windll.kernel32.OpenProcess(0x400, False, existing_pid)  # PROCESS_QUERY_INFORMATION
                     if handle:
                         ctypes.windll.kernel32.CloseHandle(handle)
-                        return False  # Process exists, another instance is running
+                        # Process exists - kill it and start fresh
+                        print(f"Found existing GUI process {existing_pid}, killing it...")
+                        try:
+                            import subprocess
+                            subprocess.run(['taskkill', '/F', '/PID', str(existing_pid)], 
+                                         capture_output=True, timeout=5)
+                            import time
+                            time.sleep(0.5)
+                            # Remove the file after killing
+                            if os.path.exists(gui_running_file):
+                                os.remove(gui_running_file)
+                        except Exception as e:
+                            print(f"Error killing existing GUI: {e}")
+                        return True  # Continue with starting new instance
                 else:
                     # For non-Windows (though this is a Windows app)
                     os.kill(existing_pid, 0)
                     return False  # Process exists
             except (OSError, ValueError):
                 # Process doesn't exist, remove stale file
+                print(f"Removing stale GUI running file (PID {existing_pid} not found)")
                 try:
                     os.remove(gui_running_file)
                 except OSError:
                     pass
-        except Exception:
+        except Exception as e:
             # Error reading file, assume it's stale
+            print(f"Error reading GUI running file: {e}")
             try:
                 os.remove(gui_running_file)
             except OSError:
                 pass
     
-    return True  # No other instance running
+    return True  # No other instance running or cleaned up successfully
 
 if __name__ == '__main__':
-    # Check for single instance
-    if not check_single_instance_gui():
-        # Another instance is already running
-        root = tk.Tk()
-        root.withdraw()  # Hide the root window
-        messagebox.showwarning("Label Print Server GUI", 
-                              "Another instance of Label Print Server GUI is already running.\n\n"
-                              "Please check your taskbar or system tray.")
-        root.destroy()
-        sys.exit(1)
+    # Check for single instance and clean up if needed
+    check_single_instance_gui()  # Always returns True now or cleans up
     
     # Create GUI instance indicator file
     gui_running_file = os.path.join(os.path.dirname(__file__), '.gui_running')

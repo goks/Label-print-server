@@ -735,19 +735,67 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
         from datetime import datetime
         packed_time = datetime.now().strftime('%d/%m/%Y %H:%M')
         
-        # Format quotation with copy info if applicable
+        # Format quotation - keep original quotation number
+        quotation_display = quotation
+        
+        # Format copy number field (e.g., "1/5", "2/5", etc.)
         if copy_number is not None and total_copies is not None and total_copies > 1:
-            quotation_display = f"{quotation} ({copy_number} of {total_copies})"
+            copy_number_text = f"{copy_number}/{total_copies}"
         else:
-            quotation_display = quotation
+            copy_number_text = "1/1"
         
         # Log the print request
-        print(f"Server: BarTender print request for quotation {quotation_display}")
+        print(f"Server: BarTender print request for quotation {quotation_display} - copy {copy_number_text}")
         print(f"Server: Template: {bartender_template_path}")
         print(f"Server: Customer: {customer_name}")
         print(f"Server: Combined contact: {combined_contact}")
         
-        # Method 1: Optimized BarTender Command Line Interface (Async)
+        # Method 1: Try BarTender COM Interface (Primary - supports sequential numbering)
+        try:
+            import win32com.client
+            
+            print("Server: Using BarTender COM interface for sequential numbering")
+            
+            # Create BarTender application object
+            bt_app = win32com.client.Dispatch("BarTender.Application")
+            
+            # bt_app.Visible = True # Make BarTender visible for debugging
+            
+            bt_format = bt_app.Formats.Open(bartender_template_path, False, "")
+            
+            # Set data sources/variables
+            bt_format.SetNamedSubStringValue("quotation_number", quotation_display)
+            bt_format.SetNamedSubStringValue("customer_name", customer_name)
+            bt_format.SetNamedSubStringValue("address", address)
+            bt_format.SetNamedSubStringValue("mobile", combined_contact)
+            bt_format.SetNamedSubStringValue("packed_time", packed_time)
+            
+            # NEW: Set the copy number field (e.g., "1/5", "2/5", etc.)
+            bt_format.SetNamedSubStringValue("copy_number", copy_number_text)
+            
+            # Print the label
+            if SELECTED_PRINTER:
+                # Set the printer for this format
+                bt_format.Printer = SELECTED_PRINTER
+                print(f"Server: BarTender printer set to: {SELECTED_PRINTER}")
+                
+                # Use PrintOut with correct parameters (PrintDialog, JobDialog)
+                bt_format.PrintOut(False, False)  # False, False = no print dialog, no job dialog
+            else:
+                bt_format.PrintOut(False, False)
+            
+            # Close the format and application
+            bt_format.Close(0)  # 0 = don't save changes
+            bt_app.Quit(0)      # 0 = don't save changes
+            
+            print(f"Server: BarTender COM print successful - copy {copy_number_text}")
+            return True
+                
+        except Exception as com_error:
+            print(f"Server: BarTender COM method failed: {com_error}")
+            app.logger.warning(f"BarTender COM failed, trying CLI fallback: {com_error}")
+        
+        # Method 2: BarTender Command Line Interface (Fallback)
         try:
             bartender_cmd = [
                 'bartend.exe',
@@ -757,6 +805,7 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
                 '/AF=address=' + address,
                 '/AF=mobile=' + combined_contact,
                 '/AF=packed_time=' + packed_time,
+                '/AF=copy_number=' + copy_number_text,  # Add copy number to CLI
                 '/P',  # Print command
                 '/X'   # Exit after printing
             ]
@@ -778,59 +827,18 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
             try:
                 stdout, stderr = process.communicate(timeout=3)  # 3 second max wait
                 if process.returncode == 0:
-                    app.logger.info(f"BarTender print job dispatched successfully")
+                    app.logger.info(f"BarTender CLI print dispatched - copy {copy_number_text}")
                     return True
                 else:
                     app.logger.warning(f"BarTender dispatch warning: {stderr.decode() if stderr else 'Unknown'}")
                     return True  # Still consider success since job was dispatched
             except subprocess.TimeoutExpired:
                 # BarTender is still running - this is good for fast response
-                app.logger.info(f"BarTender print job dispatched (background processing)")
+                app.logger.info(f"BarTender print job dispatched (background processing) - copy {copy_number_text}")
                 return True  # Don't wait for completion
                 
         except Exception as cli_error:
-            print(f"Server: BarTender CLI method failed: {cli_error}")
-        
-        # Method 2: Try BarTender COM Interface (if CLI fails)
-        try:
-            import win32com.client
-            
-            print("Server: Trying BarTender COM interface")
-            
-            # Create BarTender application object
-            bt_app = win32com.client.Dispatch("BarTender.Application")
-            
-            # bt_app.Visible = True # Make BarTender visible for debugging
-            
-            bt_format = bt_app.Formats.Open(bartender_template_path, False, "")
-            
-            # Set data sources/variables
-            bt_format.SetNamedSubStringValue("quotation_number", quotation_display)
-            bt_format.SetNamedSubStringValue("customer_name", customer_name)
-            bt_format.SetNamedSubStringValue("address", address)
-            bt_format.SetNamedSubStringValue("mobile", combined_contact)
-            bt_format.SetNamedSubStringValue("packed_time", packed_time)
-            
-            # Print the label
-            if SELECTED_PRINTER:
-                # Set the printer for this format
-                bt_format.Printer = SELECTED_PRINTER
-                print(f"Server: BarTender printer set to: {SELECTED_PRINTER}")
-                
-                # Use PrintOut with correct parameters (PrintDialog, JobDialog)
-                bt_format.PrintOut(False, False)  # False, False = no print dialog, no job dialog
-            else:
-                bt_format.PrintOut(False, False)
-            
-            # Close the format and application
-            bt_format.Close(0)  # 0 = don't save changes
-            bt_app.Quit(0)      # 0 = don't save changes
-            
-            print(f"Server: BarTender COM print successful")
-            return True
-                
-        except Exception as com_error:
-            print(f"Server: BarTender COM method failed: {com_error}")
+            print(f"Server: BarTender CLI method also failed: {cli_error}")
         return False
     except Exception as e:
         print(f"Server: BarTender print error: {e}")

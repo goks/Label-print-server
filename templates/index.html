@@ -35,17 +35,18 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
+            height: 100vh;
+            overflow: hidden;
             color: var(--text-primary);
             line-height: 1.6;
-            padding: 1rem;
+            padding: 0.5rem;
         }
 
         /* Container and layout */
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            min-height: calc(100vh - 2rem);
+            height: calc(100vh - 1rem);
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -570,6 +571,121 @@
             pointer-events: none;
         }
 
+        /* ===== LARGE DISPLAY MODE (720p distance viewing) ===== */
+        /* Main interface scaling for distance viewing */
+        .header {
+            margin-bottom: 1rem;
+        }
+
+        .header h1 {
+            font-size: 3.5rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .header p {
+            font-size: 1.5rem;
+        }
+
+        .main-card {
+            max-width: 850px;
+            padding: 2rem 3rem;
+        }
+
+        .quotation-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .quotation-section h2 {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        .quotation-input {
+            max-width: 450px;
+            padding: 1.25rem 1.75rem;
+            font-size: 2.5rem;
+            font-weight: 700;
+            border: 4px solid var(--border-color);
+            letter-spacing: 0.1em;
+        }
+
+        .party-info {
+            padding: 2rem;
+            min-height: 180px;
+            border: 4px solid var(--border-color);
+            margin: 1.5rem 0;
+        }
+
+        .party-placeholder {
+            font-size: 1.5rem;
+        }
+
+        .party-name {
+            font-size: 2rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .party-address {
+            font-size: 1.25rem;
+            color: var(--text-primary);
+            line-height: 1.5;
+        }
+
+        .party-contact {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 0.5rem;
+        }
+
+        .btn {
+            padding: 1.25rem 2.5rem;
+            font-size: 1.7rem;
+            font-weight: 700;
+            min-height: 70px;
+            gap: 1rem;
+        }
+
+        .print-status {
+            padding: 1.5rem;
+            font-size: 1.6rem;
+            font-weight: 700;
+            border-width: 3px;
+            margin-top: 1.5rem;
+        }
+
+        .spinner {
+            width: 28px;
+            height: 28px;
+            border-width: 4px;
+        }
+
+        /* Copy count modal - larger for distance viewing */
+        #copyCountModal .modal-content h3 {
+            font-size: 2rem;
+            margin-bottom: 1.5rem;
+        }
+
+        #copyCountModal .form-group label {
+            font-size: 1.5rem;
+        }
+
+        #copyCountModal .form-group input {
+            font-size: 1.8rem;
+            padding: 1.25rem 1.5rem;
+            font-weight: 700;
+            text-align: center;
+        }
+
+        #copyCountModal .help-text {
+            font-size: 1.1rem;
+        }
+
+        #copyCountModal .btn {
+            font-size: 1.5rem;
+            min-height: 65px;
+        }
+
         /* Responsive design */
         @media (max-width: 768px) {
             .container {
@@ -784,9 +900,6 @@
 
             <!-- Action Buttons -->
             <div class="btn-group">
-                <button id="previewBtn" class="btn btn-secondary hidden">
-                    👁️ Preview Label
-                </button>
                 <button id="printBtn" class="btn btn-success hidden">
                     🖨️ Print Label
                 </button>
@@ -867,10 +980,10 @@
             
             <div class="form-group">
                 <label for="copyCount">Number of Copies:</label>
-                <input type="number" id="copyCount" min="1" max="100" value="1" 
+                <input type="number" id="copyCount" min="1" max="50" value="1" 
                        placeholder="Enter number of copies" autofocus>
                 <small class="help-text">
-                    💡 Each copy will be numbered sequentially (e.g., "1 of 3", "2 of 3", "3 of 3")
+                    � Each label will show copy number (e.g., "1/5", "2/5", "3/5")
                 </small>
             </div>
             
@@ -889,7 +1002,6 @@
         // DOM element references
         const quotationInput = document.getElementById('quotation');
         const partyDiv = document.getElementById('party');
-        const previewBtn = document.getElementById('previewBtn');
         const printBtn = document.getElementById('printBtn');
         const printStatus = document.getElementById('printStatus');
         
@@ -901,12 +1013,6 @@
         const testConnectionBtn = document.getElementById('testConnection');
         const refreshPrintersBtn = document.getElementById('refreshPrinters');
         const browseTemplateBtn = document.getElementById('browseTemplate');
-
-        // Preview modal elements
-        const previewModal = document.getElementById('previewModal');
-        const previewClose = document.getElementById('previewClose');
-        const closePreviewBtn = document.getElementById('closePreview');
-        const printFromPreviewBtn = document.getElementById('printFromPreview');
 
         // Copy count modal elements
         const copyCountModal = document.getElementById('copyCountModal');
@@ -961,24 +1067,6 @@
             document.body.appendChild(fileInput);
             fileInput.click();
             document.body.removeChild(fileInput);
-        }
-
-        // Preview modal handlers
-        previewBtn.onclick = function() {
-            showLabelPreview();
-        }
-
-        previewClose.onclick = function() {
-            previewModal.style.display = 'none';
-        }
-
-        closePreviewBtn.onclick = function() {
-            previewModal.style.display = 'none';
-        }
-
-        printFromPreviewBtn.onclick = function() {
-            previewModal.style.display = 'none';
-            printLabel();
         }
 
         // Copy count modal handlers
@@ -1207,7 +1295,6 @@ Tables: ${result.tables_found}`, 'success');
                 // Clear the party display immediately  
                 partyDiv.innerHTML = '<div class="party-placeholder">Enter quotation number to view customer details</div>';
                 partyDiv.classList.remove('populated');
-                previewBtn.classList.add('hidden');
                 printBtn.classList.add('hidden');
                 currentPartyData = null;
                 
@@ -1240,7 +1327,6 @@ Tables: ${result.tables_found}`, 'success');
             if (!quotation.trim()) {
                 partyDiv.innerHTML = '<div class="party-placeholder">Enter quotation number to view customer details</div>';
                 partyDiv.classList.remove('populated');
-                previewBtn.classList.add('hidden');
                 printBtn.classList.add('hidden');
                 currentPartyData = null;
                 
@@ -1286,12 +1372,10 @@ Tables: ${result.tables_found}`, 'success');
                         </div>
                     `;
                     partyDiv.classList.add('populated');
-                    previewBtn.classList.remove('hidden');
                     printBtn.classList.remove('hidden');
                 } else {
                     partyDiv.innerHTML = '<div class="party-placeholder">❌ No customer found for this quotation number</div>';
                     partyDiv.classList.remove('populated');
-                    previewBtn.classList.add('hidden');
                     printBtn.classList.add('hidden');
                     currentPartyData = null;
                 }
@@ -1299,7 +1383,6 @@ Tables: ${result.tables_found}`, 'success');
                 console.error('Lookup error:', error);
                 partyDiv.innerHTML = '<div class="party-placeholder">⚠️ Error looking up customer information</div>';
                 partyDiv.classList.remove('populated');
-                previewBtn.classList.add('hidden');
                 printBtn.classList.add('hidden');
                 currentPartyData = null;
             }
@@ -1405,8 +1488,22 @@ Tables: ${result.tables_found}`, 'success');
             }, 3000);
         }
 
-        // Print button handler
-        printBtn.onclick = printLabel;
+        // Print button handler - Show copy count modal
+        printBtn.onclick = function() {
+            if (!currentPartyData) return;
+            
+            // Reset copy count to 1
+            copyCountInput.value = 1;
+            
+            // Show the copy count modal
+            copyCountModal.style.display = 'block';
+            
+            // Focus on the copy count input
+            setTimeout(() => {
+                copyCountInput.focus();
+                copyCountInput.select();
+            }, 100);
+        };
 
         // Focus management
         document.addEventListener('DOMContentLoaded', function() {

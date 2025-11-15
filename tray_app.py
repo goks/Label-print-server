@@ -67,12 +67,16 @@ def check_single_instance():
                     return False  # Process exists
             except (OSError, ValueError):
                 # Process doesn't exist, remove stale file
+                print(f"Removing stale tray running file (PID {existing_pid} not found)")
                 try:
                     os.remove(tray_running_file)
-                except OSError:
+                except OSError as e:
+                    print(f"Could not remove stale file: {e}")
+                    # If we can't remove it, try to overwrite it anyway
                     pass
-        except Exception:
+        except Exception as e:
             # Error reading file, assume it's stale
+            print(f"Error reading tray running file: {e}")
             try:
                 os.remove(tray_running_file)
             except OSError:
@@ -431,33 +435,39 @@ def show_gui(icon, item):
                 print('Successfully restored existing GUI window')
                 return
             else:
-                print('Could not restore GUI window - it may be starting up or hidden')
-                return
+                print('Could not restore GUI window - launching new one')
+                # Kill the old unresponsive process
+                try:
+                    import psutil
+                    proc = psutil.Process(gui_proc.pid)
+                    proc.kill()
+                    print(f'Killed unresponsive GUI process {gui_proc.pid}')
+                except:
+                    pass
+                gui_proc = None
 
         # Clean up dead process reference
         if gui_proc is not None and gui_proc.poll() is not None:
             print(f'Previous GUI process {gui_proc.pid} has ended')
             gui_proc = None
 
-        # Launch new GUI process with better isolation
+        # Launch new GUI process using pythonw.exe (no console window)
         print('Launching new GUI process...')
         
-        # Set environment variables for GUI process isolation
-        gui_env = os.environ.copy()
-        gui_env['PYTHONPATH'] = os.path.dirname(__file__)
-        gui_env['GUI_PROCESS'] = '1'  # Flag to indicate this is a GUI process
+        pythonw_exe = os.path.join(os.path.dirname(__file__), '.venv', 'Scripts', 'pythonw.exe')
         
-        # Launch with process isolation
+        # Launch without console window
         gui_proc = subprocess.Popen(
-            [sys.executable, gui_script], 
-            close_fds=True,
-            env=gui_env,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP') else 0
+            [pythonw_exe, gui_script],
+            cwd=os.path.dirname(__file__),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
-        print(f'Launched GUI process {gui_proc.pid} with isolation')
+        print(f'Launched GUI process {gui_proc.pid}')
         
     except Exception as e:
         print(f'Failed to launch GUI process: {e}')
+        import traceback
+        traceback.print_exc()
         try:
             create_window()
         except Exception as e2:
@@ -518,10 +528,19 @@ def show_context_menu(hwnd):
         # Create popup menu
         hmenu = win32gui.CreatePopupMenu()
         
-        # Add menu items - using InsertMenu instead of AppendMenu for better compatibility
-        win32gui.InsertMenu(hmenu, 0, win32con.MF_BYPOSITION | win32con.MF_STRING, 1001, "Show GUI")
-        win32gui.InsertMenu(hmenu, 1, win32con.MF_BYPOSITION | win32con.MF_SEPARATOR, 0, None)
-        win32gui.InsertMenu(hmenu, 2, win32con.MF_BYPOSITION | win32con.MF_STRING, 1002, "Quit")
+        # Add menu items - using InsertMenu instead of AppendMenu for better compatibility  
+        win32gui.InsertMenu(hmenu, 0, win32con.MF_BYPOSITION | win32con.MF_STRING, 1001, "Open in Browser")
+        win32gui.InsertMenu(hmenu, 1, win32con.MF_BYPOSITION | win32con.MF_STRING, 1002, "Show Settings GUI")
+        win32gui.InsertMenu(hmenu, 2, win32con.MF_BYPOSITION | win32con.MF_SEPARATOR, 0, None)
+        
+        # Server control
+        if server_running:
+            win32gui.InsertMenu(hmenu, 3, win32con.MF_BYPOSITION | win32con.MF_STRING, 1003, "Stop Server")
+        else:
+            win32gui.InsertMenu(hmenu, 3, win32con.MF_BYPOSITION | win32con.MF_STRING, 1004, "Start Server")
+        
+        win32gui.InsertMenu(hmenu, 4, win32con.MF_BYPOSITION | win32con.MF_SEPARATOR, 0, None)
+        win32gui.InsertMenu(hmenu, 5, win32con.MF_BYPOSITION | win32con.MF_STRING, 1005, "Quit")
         
         # Get cursor position
         pos = win32gui.GetCursorPos()
@@ -538,9 +557,15 @@ def show_context_menu(hwnd):
         )
         
         # Handle menu selection
-        if cmd == 1001:  # Show GUI
+        if cmd == 1001:  # Open in Browser
+            open_in_browser()
+        elif cmd == 1002:  # Show Settings GUI
             show_gui(None, None)
-        elif cmd == 1002:  # Quit
+        elif cmd == 1003:  # Stop Server
+            stop_server()
+        elif cmd == 1004:  # Start Server
+            start_server()
+        elif cmd == 1005:  # Quit
             quit_application()
         
         # Clean up
@@ -551,8 +576,8 @@ def show_context_menu(hwnd):
         
     except Exception as e:
         print(f"Error showing context menu: {e}")
-        # Fallback to just showing GUI if menu fails
-        show_gui(None, None)
+        # Fallback to opening browser
+        open_in_browser()
 
 def quit_application():
     """Quit the entire application including server"""
@@ -599,11 +624,37 @@ if not check_single_instance():
     # Another instance is already running
     root = tk.Tk()
     root.withdraw()  # Hide the root window
-    messagebox.showwarning("Label Print Server", 
-                          "Another instance of Label Print Server is already running.\n\n"
-                          "Please check your system tray for the existing application.")
+    
+    response = messagebox.askyesno(
+        "Label Print Server", 
+        "Another instance of Label Print Server may be running.\n\n"
+        "This could be a stale process or control file.\n\n"
+        "Do you want to force start anyway?\n"
+        "(This will clean up old files and processes)",
+        icon='warning'
+    )
+    
+    if response:
+        # User chose to force start - clean up
+        print("User chose to force start - cleaning up...")
+        tray_running_file = os.path.join(os.path.dirname(__file__), '.tray_running')
+        try:
+            if os.path.exists(tray_running_file):
+                os.remove(tray_running_file)
+                print("Removed stale tray running file")
+        except Exception as e:
+            print(f"Error removing file: {e}")
+            messagebox.showerror("Error", f"Could not remove stale file: {e}\n\nPlease run cleanup_tray.bat")
+            root.destroy()
+            sys.exit(1)
+        # Continue with startup
+    else:
+        # User chose not to force start
+        print("User cancelled startup")
+        root.destroy()
+        sys.exit(0)
+    
     root.destroy()
-    sys.exit(1)
 
 # Create window class
 wc = win32gui.WNDCLASS()
@@ -643,6 +694,20 @@ if not hicon:
 # Add tray icon
 nid = (hwnd, TRAY_ICON_ID, NIF_ICON | NIF_MESSAGE | NIF_TIP, WM_TRAYICON, hicon, "Label Print Server")
 win32gui.Shell_NotifyIcon(NIM_ADD, nid)
+
+# Cleanup function for atexit
+def cleanup_on_exit():
+    """Clean up tray files on exit"""
+    try:
+        tray_running_file = os.path.join(os.path.dirname(__file__), '.tray_running')
+        if os.path.exists(tray_running_file):
+            os.remove(tray_running_file)
+            print("Cleaned up tray running file on exit")
+    except Exception as e:
+        print(f"Error cleaning up on exit: {e}")
+
+# Register cleanup function
+atexit.register(cleanup_on_exit)
 
 # Create tray running indicator file
 try:
