@@ -217,16 +217,16 @@ def before_request():
     g.start_time = time.time()
     g.request_id = os.urandom(8).hex()
     
-    # Log incoming request (excluding static files)
-    if not request.endpoint or not request.endpoint.startswith('static'):
-        access_logger.info(
-            'Request %s: %s %s from %s - User-Agent: %s',
-            g.request_id,
-            request.method,
-            request.url,
-            request.remote_addr,
-            request.headers.get('User-Agent', 'Unknown')
-        )
+    # Only log non-health-check requests in production to reduce noise
+    if Config.LOG_LEVEL == 'DEBUG' or (request.endpoint and request.endpoint not in ['static', 'health_check', 'metrics']):
+        if not request.endpoint or not request.endpoint.startswith('static'):
+            access_logger.info(
+                'Request %s: %s %s from %s',
+                g.request_id,
+                request.method,
+                request.path,  # Use path instead of url to reduce log size
+                request.remote_addr
+            )
 
 @app.after_request
 def after_request(response):
@@ -234,26 +234,30 @@ def after_request(response):
     if hasattr(g, 'start_time'):
         duration = round((time.time() - g.start_time) * 1000, 2)  # milliseconds
         
-        # Log response (excluding static files)
-        if not request.endpoint or not request.endpoint.startswith('static'):
-            access_logger.info(
-                'Response %s: %s %s - Status: %d - Duration: %sms - Size: %s bytes',
-                g.request_id,
-                request.method,
-                request.url,
-                response.status_code,
-                duration,
-                response.content_length or 0
-            )
-            
-            # Log slow requests as warnings
-            if duration > 5000:  # 5 seconds
-                app.logger.warning(
-                    'SLOW REQUEST: %s %s took %sms',
+        # Only log important responses or slow requests
+        is_important = request.endpoint not in ['static', 'health_check', 'metrics'] if request.endpoint else True
+        is_slow = duration > 1000  # 1 second
+        is_error = response.status_code >= 400
+        
+        if Config.LOG_LEVEL == 'DEBUG' or is_slow or is_error:
+            if is_important:
+                access_logger.info(
+                    'Response %s: %s %s - Status: %d - Duration: %sms',
+                    g.request_id,
                     request.method,
-                    request.url,
+                    request.path,
+                    response.status_code,
                     duration
                 )
+        
+        # Log slow requests as warnings
+        if duration > 5000:  # 5 seconds
+            app.logger.warning(
+                'SLOW REQUEST: %s %s took %sms',
+                request.method,
+                request.path,
+                duration
+            )
     
     # Security headers
     response.headers['X-Content-Type-Options'] = 'nosniff'
