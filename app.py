@@ -652,7 +652,7 @@ def get_party_info(quotation_number):
     cache_key = int(time.time() / 300)  # 300 seconds = 5 minutes
     return _get_party_info_cached(quotation_number, cache_key)
 
-def format_label(quotation, party_info):
+def format_label(quotation, party_info, copy_number=None, total_copies=None):
     """Format label with crisp 5-line layout"""
     from datetime import datetime
     
@@ -672,8 +672,11 @@ def format_label(quotation, party_info):
     # Crisp 5-line label format
     label_lines = []
     
-    # Line 1: Quotation number
-    label_lines.append(f"Q: {quotation}")
+    # Line 1: Quotation number with optional copy info
+    if copy_number is not None and total_copies is not None and total_copies > 1:
+        label_lines.append(f"Q: {quotation} ({copy_number} of {total_copies})")
+    else:
+        label_lines.append(f"Q: {quotation}")
     
     # Line 2: Customer name (truncate if too long)
     customer_name = name[:45] if len(name) > 45 else name
@@ -704,7 +707,7 @@ def format_label(quotation, party_info):
     
     return '\n'.join(label_lines)
 
-def print_label_bartender(quotation, party_info, bartender_template_path):
+def print_label_bartender(quotation, party_info, bartender_template_path, copy_number=None, total_copies=None):
     """Print label using BarTender with template and data"""
     global SELECTED_PRINTER
     
@@ -732,8 +735,14 @@ def print_label_bartender(quotation, party_info, bartender_template_path):
         from datetime import datetime
         packed_time = datetime.now().strftime('%d/%m/%Y %H:%M')
         
+        # Format quotation with copy info if applicable
+        if copy_number is not None and total_copies is not None and total_copies > 1:
+            quotation_display = f"{quotation} ({copy_number} of {total_copies})"
+        else:
+            quotation_display = quotation
+        
         # Log the print request
-        print(f"Server: BarTender print request for quotation {quotation}")
+        print(f"Server: BarTender print request for quotation {quotation_display}")
         print(f"Server: Template: {bartender_template_path}")
         print(f"Server: Customer: {customer_name}")
         print(f"Server: Combined contact: {combined_contact}")
@@ -743,7 +752,7 @@ def print_label_bartender(quotation, party_info, bartender_template_path):
             bartender_cmd = [
                 'bartend.exe',
                 bartender_template_path,
-                '/AF=quotation_number=' + quotation,
+                '/AF=quotation_number=' + quotation_display,
                 '/AF=customer_name=' + customer_name,
                 '/AF=address=' + address,
                 '/AF=mobile=' + combined_contact,
@@ -796,7 +805,7 @@ def print_label_bartender(quotation, party_info, bartender_template_path):
             bt_format = bt_app.Formats.Open(bartender_template_path, False, "")
             
             # Set data sources/variables
-            bt_format.SetNamedSubStringValue("quotation_number", quotation)
+            bt_format.SetNamedSubStringValue("quotation_number", quotation_display)
             bt_format.SetNamedSubStringValue("customer_name", customer_name)
             bt_format.SetNamedSubStringValue("address", address)
             bt_format.SetNamedSubStringValue("mobile", combined_contact)
@@ -827,7 +836,7 @@ def print_label_bartender(quotation, party_info, bartender_template_path):
         print(f"Server: BarTender print error: {e}")
         return False
 
-def print_label(quotation, party, address='', phone='', mobile=''):
+def print_label(quotation, party, address='', phone='', mobile='', copy_number=None, total_copies=None):
     """Print label using BarTender (if template configured) or fallback to text printing"""
     global SELECTED_PRINTER, BARTENDER_TEMPLATE
     
@@ -849,7 +858,7 @@ def print_label(quotation, party, address='', phone='', mobile=''):
         # Try BarTender printing first if template is configured and not in performance mode
         if not performance_mode and BARTENDER_TEMPLATE and os.path.exists(BARTENDER_TEMPLATE):
             app.logger.info(f"Using BarTender template: {BARTENDER_TEMPLATE}")
-            success = print_label_bartender(quotation, party_info, BARTENDER_TEMPLATE)
+            success = print_label_bartender(quotation, party_info, BARTENDER_TEMPLATE, copy_number, total_copies)
             if success:
                 return True
             else:
@@ -863,23 +872,28 @@ def print_label(quotation, party, address='', phone='', mobile=''):
                 app.logger.info("No BarTender template configured, using text printing")
         
         # Fallback to text-based printing (original method)
-        return print_label_text(quotation, party_info)
+        return print_label_text(quotation, party_info, copy_number, total_copies)
         
     except Exception as e:
         app.logger.error(f"Print error: {e}")
         return False
 
-def print_label_text(quotation, party_info):
+def print_label_text(quotation, party_info, copy_number=None, total_copies=None):
     """Original text-based printing method (fallback)"""
     global SELECTED_PRINTER
     
     try:
         # Use the professional label formatting
-        label_text = format_label(quotation, party_info)
+        label_text = format_label(quotation, party_info, copy_number, total_copies)
         
         # Log which printer will be used
         printer_to_use = SELECTED_PRINTER if SELECTED_PRINTER else "Default System Printer"
-        print(f"Server: Text printing for quotation {quotation}")
+        
+        if copy_number is not None and total_copies is not None:
+            print(f"Server: Text printing for quotation {quotation} (copy {copy_number} of {total_copies})")
+        else:
+            print(f"Server: Text printing for quotation {quotation}")
+        
         print(f"Server: Target printer: {printer_to_use}")
         print(f"Label content:\n{label_text}")
         
@@ -1046,30 +1060,43 @@ def print_label_route():
     address = data.get('address', '')
     phone = data.get('phone', '')
     mobile = data.get('mobile', '')
+    copies = int(data.get('copies', 1))
     
     if not quotation or not party:
         return jsonify({'status': 'error', 'message': 'Quotation and party are required'})
     
+    # Validate copies parameter
+    if copies < 1:
+        copies = 1
+    elif copies > 100:
+        return jsonify({'status': 'error', 'message': 'Maximum 100 copies allowed'})
+    
     # Log with performance timing
-    app.logger.info(f"Print request received for quotation {quotation}")
+    if copies > 1:
+        app.logger.info(f"Print request received for quotation {quotation} ({copies} copies)")
+    else:
+        app.logger.info(f"Print request received for quotation {quotation}")
     
     # Use threading for non-blocking print operation
     def async_print_and_record():
         """Async function to handle printing and database recording"""
         try:
-            # Call the print function (runs on server)
-            success = print_label(quotation, party, address, phone, mobile)
-            
-            if success:
-                app.logger.info(f"Print job sent successfully for quotation {quotation}")
-                # Record in database asynchronously
-                try:
-                    printed_db.record_print(quotation, party=party, address=address, phone=phone, mobile=mobile)
-                    app.logger.info(f"Recorded print job for quotation {quotation}")
-                except Exception as e:
-                    app.logger.error(f"Failed to record print job: {e}")
-            else:
-                app.logger.error(f"Print job failed for quotation {quotation}")
+            # Print multiple copies if requested
+            for copy_num in range(1, copies + 1):
+                # Call the print function (runs on server)
+                success = print_label(quotation, party, address, phone, mobile, copy_num, copies)
+                
+                if success:
+                    app.logger.info(f"Print job sent successfully for quotation {quotation} (copy {copy_num} of {copies})")
+                    # Record in database asynchronously (only once, not for each copy)
+                    if copy_num == 1:
+                        try:
+                            printed_db.record_print(quotation, party=party, address=address, phone=phone, mobile=mobile)
+                            app.logger.info(f"Recorded print job for quotation {quotation}")
+                        except Exception as e:
+                            app.logger.error(f"Failed to record print job: {e}")
+                else:
+                    app.logger.error(f"Print job failed for quotation {quotation} (copy {copy_num} of {copies})")
         except Exception as e:
             app.logger.error(f"Async print error: {e}")
     
@@ -1081,10 +1108,16 @@ def print_label_route():
     response_time = (time.time() - start_time) * 1000
     app.logger.info(f"Print request processed in {response_time:.2f}ms")
     
+    if copies > 1:
+        message = f'{copies} copies initiated successfully'
+    else:
+        message = 'Print job initiated successfully'
+    
     return jsonify({
         'status': 'printing', 
-        'message': 'Print job initiated successfully',
+        'message': message,
         'quotation': quotation,
+        'copies': copies,
         'response_time_ms': round(response_time, 2)
     })
 
