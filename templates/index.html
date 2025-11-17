@@ -1441,7 +1441,7 @@ Tables: ${result.tables_found}`, 'success');
                 const data = await response.json();
                 const responseTime = (performance.now() - startTime).toFixed(0);
                 
-                if (data.status === 'printing' || data.status === 'printed') {
+                if (data.status === 'success' || data.status === 'printing' || data.status === 'printed') {
                     printStatus.className = 'print-status success';
                     if (copies > 1) {
                         printStatus.innerHTML = `✅ ${copies} copies sent (${responseTime}ms) - ${data.message}`;
