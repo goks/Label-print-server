@@ -707,9 +707,13 @@ def format_label(quotation, party_info, copy_number=None, total_copies=None):
     
     return '\n'.join(label_lines)
 
-def print_label_bartender(quotation, party_info, bartender_template_path, copy_number=None, total_copies=None):
-    """Print label using BarTender with template and data"""
+def print_label_bartender(quotation, party_info, bartender_template_path, copies=1):
+    """Print label using BarTender with template and data - simple copy count"""
     global SELECTED_PRINTER
+    
+    # Validate copies
+    if copies < 1:
+        copies = 1
     
     try:
         # Extract data for BarTender variables
@@ -738,23 +742,24 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
         # Format quotation - keep original quotation number
         quotation_display = quotation
         
-        # Format copy number field (e.g., "1/5", "2/5", etc.)
-        if copy_number is not None and total_copies is not None and total_copies > 1:
-            copy_number_text = f"{copy_number}/{total_copies}"
-        else:
-            copy_number_text = "1/1"
-        
         # Log the print request
-        print(f"Server: BarTender print request for quotation {quotation_display} - copy {copy_number_text}")
+        if copies > 1:
+            print(f"Server: BarTender print request for quotation {quotation_display} - {copies} copies")
+        else:
+            print(f"Server: BarTender print request for quotation {quotation_display}")
         print(f"Server: Template: {bartender_template_path}")
         print(f"Server: Customer: {customer_name}")
         print(f"Server: Combined contact: {combined_contact}")
         
-        # Method 1: Try BarTender COM Interface (Primary - supports sequential numbering)
+        # # Method 1: Try BarTender COM Interface (Primary)
         try:
             import win32com.client
+            import pythoncom
             
-            print("Server: Using BarTender COM interface for sequential numbering")
+            # Initialize COM for this thread
+            pythoncom.CoInitialize()
+            
+            print(f"Server: Using BarTender COM interface - {copies} copies")
             
             # Create BarTender application object
             bt_app = win32com.client.Dispatch("BarTender.Application")
@@ -769,29 +774,43 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
             bt_format.SetNamedSubStringValue("address", address)
             bt_format.SetNamedSubStringValue("mobile", combined_contact)
             bt_format.SetNamedSubStringValue("packed_time", packed_time)
+            bt_format.SetNamedSubStringValue("no_of_copies", 1)
+            bt_format.SetNamedSubStringValue("no_of_serialized_labels", copies)
             
-            # NEW: Set the copy number field (e.g., "1/5", "2/5", etc.)
-            bt_format.SetNamedSubStringValue("copy_number", copy_number_text)
-            
-            # Print the label
+            # Print with specified number of copies
             if SELECTED_PRINTER:
                 # Set the printer for this format
                 bt_format.Printer = SELECTED_PRINTER
                 print(f"Server: BarTender printer set to: {SELECTED_PRINTER}")
                 
-                # Use PrintOut with correct parameters (PrintDialog, JobDialog)
-                bt_format.PrintOut(False, False)  # False, False = no print dialog, no job dialog
+                # Set number of serialized labels (user input for copies)
+                # bt_format.PrintSetup.NumberOfSerializedLabels = copies
+                # bt_format.PrintSetup.IdenticalCopiesOfLabel = 1
+                bt_format.PrintOut(False, False)
             else:
+                # bt_format.PrintSetup.NumberOfSerializedLabels = copies
+                # bt_format.PrintSetup.IdenticalCopiesOfLabel = 1
                 bt_format.PrintOut(False, False)
             
             # Close the format and application
             bt_format.Close(0)  # 0 = don't save changes
             bt_app.Quit(0)      # 0 = don't save changes
             
-            print(f"Server: BarTender COM print successful - copy {copy_number_text}")
+            # Uninitialize COM
+            pythoncom.CoUninitialize()
+            
+            if copies > 1:
+                print(f"Server: BarTender COM print successful - {copies} copies")
+            else:
+                print(f"Server: BarTender COM print successful")
             return True
                 
         except Exception as com_error:
+            # Make sure to uninitialize COM even on error
+            try:
+                pythoncom.CoUninitialize()
+            except:
+                pass
             print(f"Server: BarTender COM method failed: {com_error}")
             app.logger.warning(f"BarTender COM failed, trying CLI fallback: {com_error}")
         
@@ -805,7 +824,9 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
                 '/AF=address=' + address,
                 '/AF=mobile=' + combined_contact,
                 '/AF=packed_time=' + packed_time,
-                '/AF=copy_number=' + copy_number_text,  # Add copy number to CLI
+                # '/AF=copy_number=1/' + str(copies),
+                f'/S={copies}',  # Number of copies
+                '/C=1',  # Number of copies
                 '/P',  # Print command
                 '/X'   # Exit after printing
             ]
@@ -814,6 +835,7 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
             if SELECTED_PRINTER:
                 bartender_cmd.append(f'/PRN={SELECTED_PRINTER}')
                 app.logger.info(f"Fast BarTender print to: {SELECTED_PRINTER}")
+                print("bartender_cmd:", bartender_cmd)
             else:
                 print(f"Server: Using default BarTender printer")
             
@@ -827,14 +849,14 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
             try:
                 stdout, stderr = process.communicate(timeout=3)  # 3 second max wait
                 if process.returncode == 0:
-                    app.logger.info(f"BarTender CLI print dispatched - copy {copy_number_text}")
+                    app.logger.info(f"BarTender CLI print dispatched - {copies} copies")
                     return True
                 else:
                     app.logger.warning(f"BarTender dispatch warning: {stderr.decode() if stderr else 'Unknown'}")
                     return True  # Still consider success since job was dispatched
             except subprocess.TimeoutExpired:
                 # BarTender is still running - this is good for fast response
-                app.logger.info(f"BarTender print job dispatched (background processing) - copy {copy_number_text}")
+                app.logger.info(f"BarTender print job dispatched (background processing) - {copies} copies")
                 return True  # Don't wait for completion
                 
         except Exception as cli_error:
@@ -844,11 +866,20 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copy_n
         print(f"Server: BarTender print error: {e}")
         return False
 
-def print_label(quotation, party, address='', phone='', mobile='', copy_number=None, total_copies=None):
-    """Print label using BarTender (if template configured) or fallback to text printing"""
-    global SELECTED_PRINTER, BARTENDER_TEMPLATE
+def print_label(quotation, party, address='', phone='', mobile='', copies=1):
+    """Print label using BarTender only - template required (with serialization for multiple copies)"""
+    global BARTENDER_TEMPLATE
     
     try:
+        # Check if BarTender template is configured
+        if not BARTENDER_TEMPLATE:
+            app.logger.error("BarTender template not configured")
+            return False
+            
+        if not os.path.exists(BARTENDER_TEMPLATE):
+            app.logger.error(f"BarTender template file not found: {BARTENDER_TEMPLATE}")
+            return False
+        
         # Create party info dictionary for BarTender
         party_info = {
             'name': party,
@@ -860,27 +891,23 @@ def print_label(quotation, party, address='', phone='', mobile='', copy_number=N
             'mobile': mobile
         }
         
-        # Check for performance mode (for testing)
-        performance_mode = os.environ.get('PERFORMANCE_MODE', 'false').lower() == 'true'
-        
-        # Try BarTender printing first if template is configured and not in performance mode
-        if not performance_mode and BARTENDER_TEMPLATE and os.path.exists(BARTENDER_TEMPLATE):
-            app.logger.info(f"Using BarTender template: {BARTENDER_TEMPLATE}")
-            success = print_label_bartender(quotation, party_info, BARTENDER_TEMPLATE, copy_number, total_copies)
-            if success:
-                return True
-            else:
-                app.logger.warning(f"BarTender failed, falling back to text printing")
+        # Print using BarTender (single invocation with serialization for multiple copies)
+        if copies > 1:
+            app.logger.info(f"Printing with BarTender template: {BARTENDER_TEMPLATE} ({copies} copies)")
         else:
-            if performance_mode:
-                app.logger.info("Performance mode: Using fast text printing")
-            elif BARTENDER_TEMPLATE:
-                app.logger.warning(f"BarTender template not found: {BARTENDER_TEMPLATE}")
-            else:
-                app.logger.info("No BarTender template configured, using text printing")
+            app.logger.info(f"Printing with BarTender template: {BARTENDER_TEMPLATE}")
         
-        # Fallback to text-based printing (original method)
-        return print_label_text(quotation, party_info, copy_number, total_copies)
+        success = print_label_bartender(quotation, party_info, BARTENDER_TEMPLATE, copies)
+        
+        if success:
+            if copies > 1:
+                app.logger.info(f"BarTender print successful for quotation {quotation} ({copies} copies)")
+            else:
+                app.logger.info(f"BarTender print successful for quotation {quotation}")
+            return True
+        else:
+            app.logger.error(f"BarTender print failed for quotation {quotation}")
+            return False
         
     except Exception as e:
         app.logger.error(f"Print error: {e}")
@@ -1056,12 +1083,25 @@ def preview_label():
 
 @app.route('/print', methods=['POST'])
 def print_label_route():
-    """Handle print requests - optimized for fast printing"""
+    """Handle print requests - BarTender only"""
     start_time = time.time()
     
     data = request.json
     if not data:
         return jsonify({'status': 'error', 'message': 'No data provided'})
+    
+    # Check if BarTender template is configured before proceeding
+    if not BARTENDER_TEMPLATE:
+        return jsonify({
+            'status': 'error', 
+            'message': 'BarTender template not configured. Please set template path in Settings.'
+        })
+    
+    if not os.path.exists(BARTENDER_TEMPLATE):
+        return jsonify({
+            'status': 'error',
+            'message': f'BarTender template file not found: {BARTENDER_TEMPLATE}'
+        })
         
     quotation = data.get('quotation')
     party = data.get('party')
@@ -1085,49 +1125,52 @@ def print_label_route():
     else:
         app.logger.info(f"Print request received for quotation {quotation}")
     
-    # Use threading for non-blocking print operation
-    def async_print_and_record():
-        """Async function to handle printing and database recording"""
-        try:
-            # Print multiple copies if requested
-            for copy_num in range(1, copies + 1):
-                # Call the print function (runs on server)
-                success = print_label(quotation, party, address, phone, mobile, copy_num, copies)
-                
-                if success:
-                    app.logger.info(f"Print job sent successfully for quotation {quotation} (copy {copy_num} of {copies})")
-                    # Record in database asynchronously (only once, not for each copy)
-                    if copy_num == 1:
-                        try:
-                            printed_db.record_print(quotation, party=party, address=address, phone=phone, mobile=mobile)
-                            app.logger.info(f"Recorded print job for quotation {quotation}")
-                        except Exception as e:
-                            app.logger.error(f"Failed to record print job: {e}")
-                else:
-                    app.logger.error(f"Print job failed for quotation {quotation} (copy {copy_num} of {copies})")
-        except Exception as e:
-            app.logger.error(f"Async print error: {e}")
-    
-    # Start async printing immediately
-    print_thread = threading.Thread(target=async_print_and_record, daemon=True)
-    print_thread.start()
-    
-    # Return immediate response without waiting for print completion
-    response_time = (time.time() - start_time) * 1000
-    app.logger.info(f"Print request processed in {response_time:.2f}ms")
-    
-    if copies > 1:
-        message = f'{copies} copies initiated successfully'
-    else:
-        message = 'Print job initiated successfully'
-    
-    return jsonify({
-        'status': 'printing', 
-        'message': message,
-        'quotation': quotation,
-        'copies': copies,
-        'response_time_ms': round(response_time, 2)
-    })
+    # Try to print synchronously to catch errors
+    try:
+        success = print_label(quotation, party, address, phone, mobile, copies)
+        
+        if not success:
+            return jsonify({
+                'status': 'error',
+                'message': 'Print job failed. Check BarTender template and printer configuration.',
+                'quotation': quotation
+            })
+        
+        # Record in database asynchronously
+        def async_record():
+            try:
+                printed_db.record_print(quotation, party=party, address=address, phone=phone, mobile=mobile)
+                app.logger.info(f"Recorded print job for quotation {quotation}")
+            except Exception as e:
+                app.logger.error(f"Failed to record print job: {e}")
+        
+        record_thread = threading.Thread(target=async_record, daemon=True)
+        record_thread.start()
+        
+        # Return success response
+        response_time = (time.time() - start_time) * 1000
+        app.logger.info(f"Print request processed in {response_time:.2f}ms")
+        
+        if copies > 1:
+            message = f'{copies} copies sent to printer successfully'
+        else:
+            message = 'Print job sent to printer successfully'
+        
+        return jsonify({
+            'status': 'success', 
+            'message': message,
+            'quotation': quotation,
+            'copies': copies,
+            'response_time_ms': round(response_time, 2)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Print error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Print job failed: {str(e)}',
+            'quotation': quotation
+        })
 
 @app.route('/get-settings', methods=['GET'])
 def get_settings():
@@ -1267,6 +1310,14 @@ def save_settings():
     if not server or not database:
         return jsonify({'success': False, 'error': 'Server and database name are required'})
     
+    # Require BarTender template for printing functionality
+    if not bartender_template:
+        return jsonify({'success': False, 'error': 'BarTender template path is required'})
+    
+    # Validate BarTender template file exists
+    if not os.path.exists(bartender_template):
+        return jsonify({'success': False, 'error': f'BarTender template file not found: {bartender_template}'})
+    
     # Test the database connection before saving
     try:
         # Use the same driver selection logic as the main app
@@ -1301,23 +1352,18 @@ def save_settings():
         conn = pyodbc.connect(conn_str)
         conn.close()
         
-        # Connection successful, save all settings
-        if save_db_settings(server, database, printer if printer else None, bartender_template if bartender_template else None):
+        # Connection successful, save all settings (bartender_template is now required)
+        if save_db_settings(server, database, printer if printer else None, bartender_template):
             if printer:
-                print(f"Server: HARDCODED printer set to: {printer}")
+                print(f"Server: Printer set to: {printer}")
                 print(f"Server: All future print jobs will use: {printer}")
             else:
                 print(f"Server: Printer selection cleared - will use default printer")
+            
+            print(f"Server: BarTender template configured: {bartender_template}")
+            print(f"Server: BarTender template file exists: {os.path.exists(bartender_template)}")
                 
-            if bartender_template:
-                if os.path.exists(bartender_template):
-                    print(f"Server: BarTender template configured: {bartender_template}")
-                else:
-                    print(f"Server: WARNING - BarTender template file not found: {bartender_template}")
-            else:
-                print(f"Server: BarTender template cleared - will use text printing")
-                
-            return jsonify({'success': True})
+            return jsonify({'success': True, 'message': 'Settings saved successfully. BarTender template configured.'})
         else:
             return jsonify({'success': False, 'error': 'Failed to save settings'})
             
