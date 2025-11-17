@@ -116,7 +116,16 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 def setup_comprehensive_logging():
     """Setup comprehensive production logging with multiple handlers"""
-    log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    # Use AppData/Local for logs when installed in Program Files
+    app_dir = os.path.dirname(__file__)
+    if 'Program Files' in app_dir:
+        # Running from installation - use user's AppData
+        log_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 
+                               'LabelPrintServer', 'logs')
+    else:
+        # Running from development directory
+        log_dir = os.path.join(app_dir, 'logs')
+    
     os.makedirs(log_dir, exist_ok=True)
     
     # Configure root logger
@@ -285,7 +294,19 @@ def unhandled_exception(error):
 # Global variables for database settings
 DB_SERVER = os.environ.get('DB_SERVER')
 DB_NAME = os.environ.get('DB_NAME')
-SETTINGS_FILE = 'db_settings.json'
+
+# Use AppData for settings when installed in Program Files
+app_dir = os.path.dirname(__file__)
+if 'Program Files' in app_dir:
+    # Running from installation - use user's AppData
+    data_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 
+                           'LabelPrintServer', 'data')
+    os.makedirs(data_dir, exist_ok=True)
+    SETTINGS_FILE = os.path.join(data_dir, 'db_settings.json')
+else:
+    # Running from development directory
+    SETTINGS_FILE = 'db_settings.json'
+
 SELECTED_PRINTER = None  # Will store the selected printer name
 BARTENDER_TEMPLATE = None  # Will store the BarTender template path
 

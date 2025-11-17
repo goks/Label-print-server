@@ -130,18 +130,19 @@ Label Print Server is a production-ready web application that streamlines wareho
 
 ## 🚀 Quick Start
 
-### One-Step Installation (Recommended)
+### One-Click Installation (Recommended)
 ```powershell
-# Automated setup - installs dependencies and configures auto-startup
-setup.bat
+# Double-click INSTALL.bat to launch the graphical installer
+INSTALL.bat
 ```
 
-This will:
-1. Create Python virtual environment
-2. Install all dependencies
-3. Configure database settings (interactive prompts)
-4. Set up Windows auto-startup
-5. Start the application in system tray
+The installer will guide you through:
+1. Selecting installation location (default: current directory)
+2. Choosing whether to auto-start with Windows
+3. Creating desktop and Start Menu shortcuts
+4. Setting up the application environment
+
+After installation, the application will start automatically in your system tray.
 
 ### Manual Installation
 ```powershell
@@ -157,7 +158,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 4. Configure database
-# Edit db_settings.json or use the web UI settings panel
+# Use the web UI settings panel at http://localhost:5000
 
 # 5. Run application
 python tray_app.py
@@ -289,22 +290,18 @@ run_tray.bat
 - **`start_tray_silent.vbs`** - Silent startup script (no console)
 - **`run_tray.bat`** - Batch file startup with virtual environment
 - **`remove_startup.bat`** - User-friendly removal script
-- **`setup.bat`** - Complete automated setup
+- **`INSTALL.bat`** - Launch graphical installer
+- **`setup_installer.py`** - GUI installation wizard
 - **`tray_app.py`** - Main tray application with embedded server
 
 ### Managing Auto-Startup
+Auto-startup is configured during installation via the graphical installer. To remove:
 ```powershell
-# Interactive management (recommended for users)
-python auto_startup.py menu
-
-# Check if auto-startup is enabled
-python auto_startup.py status
-
 # Quick removal with confirmation
 remove_startup.bat
 
-# Complete removal and cleanup
-python auto_startup.py uninstall
+# Or run the uninstaller created during installation
+python uninstall.py
 ```
 
 ### GUI Startup Management
@@ -402,10 +399,10 @@ Label-print-server/
 ├── tray_app.py              # System tray application with embedded server
 ├── tray_gui.py              # Tkinter GUI management interface
 ├── printed_db.py            # SQLite print history database manager
-├── auto_startup.py          # Windows auto-startup configuration tool
 ├── update_manager.py        # GitHub-based auto-update system
 ├── run_production.py        # Production mode launcher
-├── setup.bat                # Automated installation script
+├── INSTALL.bat              # Launch graphical installer
+├── setup_installer.py       # GUI installation wizard
 ├── start_tray_silent.vbs    # Silent VBScript launcher (no console)
 ├── run_tray.bat            # Batch launcher with virtual environment
 ├── remove_startup.bat      # User-friendly auto-startup removal
@@ -698,8 +695,8 @@ winget install Microsoft.SQLServerODBCDriver
 git clone https://github.com/goks/Label-print-server.git
 cd Label-print-server
 
-# 4. Run automated setup
-setup.bat
+# 4. Run graphical installer
+INSTALL.bat
 
 # 5. Configure database via web UI
 # Open http://localhost:5000 and click settings ⚙️

@@ -25,10 +25,15 @@ class UpdateManager:
         self.current_version = self.get_current_version()
         self.app_dir = Path(__file__).parent.absolute()
         self.update_config_file = self.app_dir / "update_config.json"
-        self.update_log_file = self.app_dir / "logs" / "updates.log"
         
-        # Ensure logs directory exists
-        self.update_log_file.parent.mkdir(exist_ok=True)
+        # Use AppData for logs when installed in Program Files
+        if 'Program Files' in str(self.app_dir):
+            log_dir = Path(os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))) / 'LabelPrintServer' / 'logs'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self.update_log_file = log_dir / "updates.log"
+        else:
+            self.update_log_file = self.app_dir / "logs" / "updates.log"
+            self.update_log_file.parent.mkdir(exist_ok=True)
         
         # Setup logging
         self.logger = logging.getLogger('UpdateManager')

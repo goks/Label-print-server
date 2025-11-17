@@ -2,7 +2,7 @@
   "auto_check": true,
   "auto_install": false,
   "check_interval_hours": 24,
-  "last_check": "2025-11-17T10:44:56.908978",
+  "last_check": "2025-11-17T17:21:41.018911",
   "update_channel": "stable",
   "backup_enabled": true,
   "notification_enabled": true

@@ -58,7 +58,7 @@ echo   • Use desktop shortcut: "Label Print Server"
 echo   • Command line: python tray_app.py
 echo.
 echo 💡 To re-enable auto-startup later:
-echo   • Run: setup.bat (complete setup)
+echo   • Run: INSTALL.bat (complete setup)
 echo   • Or: python auto_startup.py install
 echo.
 pause
