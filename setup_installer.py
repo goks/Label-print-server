@@ -298,7 +298,8 @@ class SetupInstaller:
             'README.md',
             'FUNCTIONS.md',
             'update_config.json',
-            'db_settings.json'
+            'db_settings.json',
+            'startup_launcher.vbs'
         ]
         
         # Directories to copy
@@ -375,10 +376,10 @@ class SetupInstaller:
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
             
-            pythonw = install_path / '.venv' / 'Scripts' / 'pythonw.exe'
-            tray_app = install_path / 'tray_app_v2.py'
+            # Use VBS launcher for reliable startup
+            vbs_launcher = install_path / 'startup_launcher.vbs'
             
-            value = f'"{pythonw}" "{tray_app}"'
+            value = f'wscript.exe "{vbs_launcher}"'
             winreg.SetValueEx(key, "LabelPrintServer", 0, winreg.REG_SZ, value)
             winreg.CloseKey(key)
             
