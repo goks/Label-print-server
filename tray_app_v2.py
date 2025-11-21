@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import webbrowser
+import winreg
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk, font as tkfont
@@ -664,6 +665,8 @@ class TrayApp:
             item('Start Server', self._start_server, visible=lambda _: not self.server_mgr.is_running()),
             item('Stop Server', self._stop_server, visible=lambda _: self.server_mgr.is_running()),
             pystray.Menu.SEPARATOR,
+            item('Start with Windows', self._toggle_autostart, checked=lambda _: self._is_autostart_enabled()),
+            pystray.Menu.SEPARATOR,
             item('Quit', self._quit_from_menu)
         )
         
@@ -729,6 +732,53 @@ class TrayApp:
         self.server_mgr.stop()
         if self.icon:
             self.icon.update_menu()
+    
+    def _is_autostart_enabled(self):
+        """Check if auto-start is enabled in registry"""
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+            try:
+                value, _ = winreg.QueryValueEx(key, "LabelPrintServer")
+                winreg.CloseKey(key)
+                return bool(value)
+            except FileNotFoundError:
+                winreg.CloseKey(key)
+                return False
+        except:
+            return False
+    
+    def _toggle_autostart(self, icon=None, item=None):
+        """Toggle auto-start on/off"""
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            
+            if self._is_autostart_enabled():
+                # Disable auto-start
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+                try:
+                    winreg.DeleteValue(key, "LabelPrintServer")
+                    print("Auto-start disabled")
+                except:
+                    pass
+                winreg.CloseKey(key)
+            else:
+                # Enable auto-start
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+                vbs_launcher = APP_DIR / 'startup_launcher.vbs'
+                value = f'wscript.exe "{vbs_launcher}"'
+                winreg.SetValueEx(key, "LabelPrintServer", 0, winreg.REG_SZ, value)
+                winreg.CloseKey(key)
+                print("Auto-start enabled")
+            
+            # Update menu to reflect new state
+            if self.icon:
+                self.icon.update_menu()
+                
+        except Exception as e:
+            print(f"Error toggling auto-start: {e}")
+            if self.gui_mgr and self.gui_mgr.root:
+                messagebox.showerror("Auto-start Error", f"Failed to toggle auto-start:\n{e}")
     
     def _quit_from_menu(self, icon=None, item=None):
         """Quit from tray menu"""

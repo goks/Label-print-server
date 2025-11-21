@@ -1428,6 +1428,10 @@ Tables: ${result.tables_found}`, 'success');
             
             document.body.classList.add('printing');
 
+            // Create AbortController for timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
             try {
                 const response = await fetch('/print', {
                     method: 'POST',
@@ -1435,9 +1439,11 @@ Tables: ${result.tables_found}`, 'success');
                     body: JSON.stringify({
                         ...currentPartyData,
                         copies: copies
-                    })
+                    }),
+                    signal: controller.signal
                 });
 
+                clearTimeout(timeoutId); // Clear timeout if request completes
                 const data = await response.json();
                 const responseTime = (performance.now() - startTime).toFixed(0);
                 
@@ -1474,10 +1480,24 @@ Tables: ${result.tables_found}`, 'success');
                     printStatus.innerHTML = '❌ ' + data.message;
                 }
             } catch (error) {
+                clearTimeout(timeoutId); // Clear timeout on error
                 console.error('Print error:', error);
                 const responseTime = (performance.now() - startTime).toFixed(0);
                 printStatus.className = 'print-status error';
-                printStatus.innerHTML = `⚠️ Print failed (${responseTime}ms) - Check server connection`;
+                
+                // Check if error was due to timeout
+                if (error.name === 'AbortError') {
+                    printStatus.innerHTML = `⏱️ Print request timeout (10s) - Job may still be processing`;
+                } else {
+                    printStatus.innerHTML = `⚠️ Print failed (${responseTime}ms) - Check server connection`;
+                }
+                
+                // Release UI after timeout/error
+                quotationInput.value = '';
+                quotationInput.focus();
+                currentPartyData = null;
+                resultsDiv.classList.add('hidden');
+                previewDiv.classList.add('hidden');
             }
 
             document.body.classList.remove('printing');
