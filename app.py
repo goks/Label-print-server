@@ -309,6 +309,7 @@ else:
 
 SELECTED_PRINTER = None  # Will store the selected printer name
 BARTENDER_TEMPLATE = None  # Will store the BarTender template path
+BARTENDER_HEAVY_TEMPLATE = None  # Will store the BarTender heavy items template path
 
 # Settings cache with lock for thread-safety
 _settings_cache = {
@@ -316,6 +317,7 @@ _settings_cache = {
     'database': None,
     'printer': None,
     'bartender_template': None,
+    'bartender_heavy_template': None,
     'last_loaded': None
 }
 _settings_lock = threading.Lock()
@@ -378,7 +380,7 @@ def get_available_printers():
 
 def load_db_settings():
     """Load database settings from file or environment variables with caching"""
-    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE, _settings_cache
+    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE, BARTENDER_HEAVY_TEMPLATE, _settings_cache
     
     # Check if settings are already cached in memory
     with _settings_lock:
@@ -388,6 +390,7 @@ def load_db_settings():
             DB_NAME = _settings_cache['database']
             SELECTED_PRINTER = _settings_cache['printer']
             BARTENDER_TEMPLATE = _settings_cache['bartender_template']
+            BARTENDER_HEAVY_TEMPLATE = _settings_cache['bartender_heavy_template']
             return
     
     # Load from file if not cached
@@ -399,6 +402,7 @@ def load_db_settings():
                 DB_NAME = settings.get('database', DB_NAME)
                 SELECTED_PRINTER = settings.get('printer', None)
                 BARTENDER_TEMPLATE = settings.get('bartender_template', None)
+                BARTENDER_HEAVY_TEMPLATE = settings.get('bartender_heavy_template', None)
                 
                 # Update cache
                 with _settings_lock:
@@ -406,23 +410,26 @@ def load_db_settings():
                     _settings_cache['database'] = DB_NAME
                     _settings_cache['printer'] = SELECTED_PRINTER
                     _settings_cache['bartender_template'] = BARTENDER_TEMPLATE
+                    _settings_cache['bartender_heavy_template'] = BARTENDER_HEAVY_TEMPLATE
                     _settings_cache['last_loaded'] = time.time()
                 
                 print(f"Server: Loaded settings - Server: {DB_SERVER}, DB: {DB_NAME}, Printer: {SELECTED_PRINTER}")
                 print(f"Server: BarTender Template: {BARTENDER_TEMPLATE}")
+                print(f"Server: BarTender Heavy Items Template: {BARTENDER_HEAVY_TEMPLATE}")
         except Exception as e:
             print(f"Error loading settings: {e}")
 
-def save_db_settings(server, database, printer=None, bartender_template=None):
+def save_db_settings(server, database, printer=None, bartender_template=None, bartender_heavy_template=None):
     """Save database, printer and BarTender settings to file and update cache"""
-    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE, _settings_cache
+    global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE, BARTENDER_HEAVY_TEMPLATE, _settings_cache
     
     try:
         settings = {
             'server': server, 
             'database': database,
             'printer': printer,
-            'bartender_template': bartender_template
+            'bartender_template': bartender_template,
+            'bartender_heavy_template': bartender_heavy_template
         }
         with open(SETTINGS_FILE, 'w') as f:
             json.dump(settings, f)
@@ -433,14 +440,17 @@ def save_db_settings(server, database, printer=None, bartender_template=None):
             DB_NAME = database
             SELECTED_PRINTER = printer
             BARTENDER_TEMPLATE = bartender_template
+            BARTENDER_HEAVY_TEMPLATE = bartender_heavy_template
             _settings_cache['server'] = server
             _settings_cache['database'] = database
             _settings_cache['printer'] = printer
             _settings_cache['bartender_template'] = bartender_template
+            _settings_cache['bartender_heavy_template'] = bartender_heavy_template
             _settings_cache['last_loaded'] = time.time()
         
         print(f"Server: Saved settings - Server: {server}, DB: {database}, Printer: {printer}")
         print(f"Server: BarTender Template: {bartender_template}")
+        print(f"Server: BarTender Heavy Items Template: {bartender_heavy_template}")
         return True
     except Exception as e:
         print(f"Error saving settings: {e}")
@@ -889,16 +899,35 @@ def print_label_bartender(quotation, party_info, bartender_template_path, copies
 
 def print_label(quotation, party, address='', phone='', mobile='', copies=1):
     """Print label using BarTender only - template required (with serialization for multiple copies)"""
-    global BARTENDER_TEMPLATE
+    global BARTENDER_TEMPLATE, BARTENDER_HEAVY_TEMPLATE
     
     try:
+        # Detect heavy items mode: quotation contains .number (e.g., "9171.5")
+        template_to_use = BARTENDER_TEMPLATE
+        is_heavy_mode = False
+        
+        if '.' in quotation:
+            parts = quotation.split('.')
+            if len(parts) == 2 and parts[1].isdigit():
+                is_heavy_mode = True
+                # Remove the .number suffix for the actual quotation
+                quotation = parts[0]
+                
+                # Use heavy template if configured
+                if BARTENDER_HEAVY_TEMPLATE and os.path.exists(BARTENDER_HEAVY_TEMPLATE):
+                    template_to_use = BARTENDER_HEAVY_TEMPLATE
+                    app.logger.info(f"Heavy items mode detected - using template: {BARTENDER_HEAVY_TEMPLATE}")
+                else:
+                    app.logger.warning(f"Heavy items mode detected but template not configured or not found")
+                    is_heavy_mode = False
+        
         # Check if BarTender template is configured
-        if not BARTENDER_TEMPLATE:
+        if not template_to_use:
             app.logger.error("BarTender template not configured")
             return False
             
-        if not os.path.exists(BARTENDER_TEMPLATE):
-            app.logger.error(f"BarTender template file not found: {BARTENDER_TEMPLATE}")
+        if not os.path.exists(template_to_use):
+            app.logger.error(f"BarTender template file not found: {template_to_use}")
             return False
         
         # Create party info dictionary for BarTender
@@ -913,12 +942,13 @@ def print_label(quotation, party, address='', phone='', mobile='', copies=1):
         }
         
         # Print using BarTender (single invocation with serialization for multiple copies)
+        mode_str = " [HEAVY ITEMS]" if is_heavy_mode else ""
         if copies > 1:
-            app.logger.info(f"Printing with BarTender template: {BARTENDER_TEMPLATE} ({copies} copies)")
+            app.logger.info(f"Printing with BarTender template{mode_str}: {template_to_use} ({copies} copies)")
         else:
-            app.logger.info(f"Printing with BarTender template: {BARTENDER_TEMPLATE}")
+            app.logger.info(f"Printing with BarTender template{mode_str}: {template_to_use}")
         
-        success = print_label_bartender(quotation, party_info, BARTENDER_TEMPLATE, copies)
+        success = print_label_bartender(quotation, party_info, template_to_use, copies)
         
         if success:
             if copies > 1:
@@ -1200,7 +1230,8 @@ def get_settings():
         'server': DB_SERVER or '',
         'database': DB_NAME or '',
         'printer': SELECTED_PRINTER or '',
-        'bartender_template': BARTENDER_TEMPLATE or ''
+        'bartender_template': BARTENDER_TEMPLATE or '',
+        'bartender_heavy_template': BARTENDER_HEAVY_TEMPLATE or ''
     })
 
 @app.route('/get-printers', methods=['GET'])
@@ -1327,6 +1358,7 @@ def save_settings():
     database = data.get('database', '').strip()
     printer = data.get('printer', '').strip()
     bartender_template = data.get('bartender_template', '').strip()
+    bartender_heavy_template = data.get('bartender_heavy_template', '').strip()
     
     if not server or not database:
         return jsonify({'success': False, 'error': 'Server and database name are required'})
@@ -1338,6 +1370,10 @@ def save_settings():
     # Validate BarTender template file exists
     if not os.path.exists(bartender_template):
         return jsonify({'success': False, 'error': f'BarTender template file not found: {bartender_template}'})
+    
+    # Validate heavy items template if provided
+    if bartender_heavy_template and not os.path.exists(bartender_heavy_template):
+        return jsonify({'success': False, 'error': f'Heavy items template file not found: {bartender_heavy_template}'})
     
     # Test the database connection before saving
     try:
@@ -1374,7 +1410,7 @@ def save_settings():
         conn.close()
         
         # Connection successful, save all settings (bartender_template is now required)
-        if save_db_settings(server, database, printer if printer else None, bartender_template):
+        if save_db_settings(server, database, printer if printer else None, bartender_template, bartender_heavy_template if bartender_heavy_template else None):
             if printer:
                 print(f"Server: Printer set to: {printer}")
                 print(f"Server: All future print jobs will use: {printer}")
@@ -1383,8 +1419,11 @@ def save_settings():
             
             print(f"Server: BarTender template configured: {bartender_template}")
             print(f"Server: BarTender template file exists: {os.path.exists(bartender_template)}")
+            if bartender_heavy_template:
+                print(f"Server: Heavy items template configured: {bartender_heavy_template}")
+                print(f"Server: Heavy items template file exists: {os.path.exists(bartender_heavy_template)}")
                 
-            return jsonify({'success': True, 'message': 'Settings saved successfully. BarTender template configured.'})
+            return jsonify({'success': True, 'message': 'Settings saved successfully. BarTender templates configured.'})
         else:
             return jsonify({'success': False, 'error': 'Failed to save settings'})
             

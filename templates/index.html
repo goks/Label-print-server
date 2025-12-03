@@ -946,6 +946,15 @@
                 </small>
             </div>
             
+            <div class="form-group">
+                <label for="bartenderHeavyTemplate">Heavy Items Template (.btw file):</label>
+                <input type="text" id="bartenderHeavyTemplate" placeholder="C:\Templates\heavy_label.btw" class="template-path">
+                <button id="browseHeavyTemplate" class="refresh-btn">📁 Browse</button>
+                <small class="help-text">
+                    📦 Template for heavy items (triggered by entering quotation.number format, e.g., 9171.5)
+                </small>
+            </div>
+            
             <div class="btn-group">
                 <button class="btn btn-secondary" id="testConnection">🔍 Test Connection</button>
                 <button class="btn btn-primary" id="saveSettings">💾 Save Settings</button>
@@ -1013,6 +1022,7 @@
         const testConnectionBtn = document.getElementById('testConnection');
         const refreshPrintersBtn = document.getElementById('refreshPrinters');
         const browseTemplateBtn = document.getElementById('browseTemplate');
+        const browseHeavyTemplateBtn = document.getElementById('browseHeavyTemplate');
 
         // Copy count modal elements
         const copyCountModal = document.getElementById('copyCountModal');
@@ -1069,6 +1079,24 @@
             document.body.removeChild(fileInput);
         }
 
+        browseHeavyTemplateBtn.onclick = function() {
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.btw';
+            fileInput.style.display = 'none';
+            
+            fileInput.onchange = function() {
+                if (fileInput.files.length > 0) {
+                    const filePath = fileInput.files[0].path || fileInput.value;
+                    document.getElementById('bartenderHeavyTemplate').value = filePath;
+                }
+            };
+            
+            document.body.appendChild(fileInput);
+            fileInput.click();
+            document.body.removeChild(fileInput);
+        }
+
         // Copy count modal handlers
         copyCountClose.onclick = function() {
             copyCountModal.style.display = 'none';
@@ -1079,13 +1107,51 @@
         }
 
         confirmCopiesBtn.onclick = function() {
-            const copies = parseInt(copyCountInput.value) || 0;
-            if (copies > 0) {
-                copyCountModal.style.display = 'none';
-                printLabel(copies);
+            const copyInput = copyCountInput.value.trim();
+            
+            // Check for heavy items mode: .number format (e.g., ".5" or ".10")
+            let copies = 1;
+            let isHeavyMode = false;
+            
+            if (copyInput.startsWith('.')) {
+                // Heavy items mode triggered
+                const heavyCount = parseInt(copyInput.substring(1));
+                if (heavyCount > 0) {
+                    copies = heavyCount;
+                    isHeavyMode = true;
+                    
+                    // Update quotation to include .number for backend
+                    const originalQuotation = currentPartyData.quotation.split('.')[0];
+                    currentPartyData.quotation = originalQuotation + copyInput;
+                    console.log('🔴 HEAVY MODE ACTIVATED:', {
+                        input: copyInput,
+                        copies: copies,
+                        originalQuotation: originalQuotation,
+                        modifiedQuotation: currentPartyData.quotation
+                    });
+                } else {
+                    alert('Please enter a valid number after the dot (e.g., .5 for 5 heavy labels)');
+                    return;
+                }
             } else {
-                alert('Please enter a valid number of copies (1 or more)');
+                copies = parseInt(copyInput) || 0;
+                if (copies <= 0) {
+                    alert('Please enter a valid number of copies (1 or more, or .number for heavy items)');
+                    return;
+                }
+                console.log('📦 Normal mode:', { copies: copies, quotation: currentPartyData.quotation });
             }
+            
+            copyCountModal.style.display = 'none';
+            
+            // Show visual indicator for heavy mode
+            if (isHeavyMode) {
+                printStatus.className = 'print-status printing';
+                printStatus.innerHTML = `<div class="spinner"></div> 🔴 HEAVY ITEMS MODE - Printing ${copies} labels...`;
+                printStatus.classList.remove('hidden');
+            }
+            
+            printLabel(copies);
         }
 
         // Handle Enter key in copy count input
@@ -1104,10 +1170,12 @@
                 document.getElementById('dbServer').value = settings.server || '';
                 document.getElementById('dbName').value = settings.database || '';
                 document.getElementById('bartenderTemplate').value = settings.bartender_template || '';
+                document.getElementById('bartenderHeavyTemplate').value = settings.bartender_heavy_template || '';
                 
                 window.currentPrinterSetting = settings.printer || '';
                 console.log('Current printer setting:', window.currentPrinterSetting);
                 console.log('Current BarTender template:', settings.bartender_template);
+                console.log('Current BarTender heavy template:', settings.bartender_heavy_template);
                 
             } catch (error) {
                 console.error('Error loading settings:', error);
@@ -1213,6 +1281,7 @@ Tables: ${result.tables_found}`, 'success');
             const database = document.getElementById('dbName').value;
             const printer = document.getElementById('printerSelect').value;
             const bartenderTemplate = document.getElementById('bartenderTemplate').value;
+            const bartenderHeavyTemplate = document.getElementById('bartenderHeavyTemplate').value;
             
             if (!server || !database) {
                 showStatus('Please fill in both server and database name.', 'error');
@@ -1227,7 +1296,8 @@ Tables: ${result.tables_found}`, 'success');
                         server: server, 
                         database: database,
                         printer: printer,
-                        bartender_template: bartenderTemplate
+                        bartender_template: bartenderTemplate,
+                        bartender_heavy_template: bartenderHeavyTemplate
                     })
                 });
                 
@@ -1492,14 +1562,26 @@ Tables: ${result.tables_found}`, 'success');
                     printStatus.innerHTML = `⚠️ Print failed (${responseTime}ms) - Check server connection`;
                 }
                 
-                // Release UI after timeout/error
-                quotationInput.value = '';
-                quotationInput.focus();
-                currentPartyData = null;
-                resultsDiv.classList.add('hidden');
-                previewDiv.classList.add('hidden');
+                // Release UI after timeout/error - CRITICAL: Remove printing class to restore interaction
+                document.body.classList.remove('printing');
+                
+                // Clear the UI and reset for next input
+                setTimeout(() => {
+                    quotationInput.value = '';
+                    quotationInput.focus();
+                    currentPartyData = null;
+                    partyDiv.innerHTML = '<div class="party-placeholder">Enter quotation number to view customer details</div>';
+                    partyDiv.classList.remove('populated');
+                    printBtn.classList.add('hidden');
+                    resultsDiv.classList.add('hidden');
+                    previewDiv.classList.add('hidden');
+                    printStatus.classList.add('hidden');
+                }, 1500);
+                
+                return; // Exit function after error handling
             }
 
+            // Normal completion - remove printing state
             document.body.classList.remove('printing');
             
             // Hide status after delay
