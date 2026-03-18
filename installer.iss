@@ -42,8 +42,6 @@ Source: "dist\LabelPrintServer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "templates\*"; DestDir: "{app}\templates"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "icons\*"; DestDir: "{app}\icons"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
-Source: "cleanup_previous_install.bat"; DestDir: "{app}"; Flags: ignoreversion
-Source: "add_to_startup.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
