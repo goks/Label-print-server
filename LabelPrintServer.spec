@@ -5,7 +5,7 @@ a = Analysis(
     ['tray_app_v2.py'],
     pathex=[],
     binaries=[],
-    datas=[('templates', 'templates'), ('icons', 'icons'), ('VERSION', '.'), ('README.md', '.'), ('FUNCTIONS.md', '.'), ('db_settings.json', '.'), ('update_config.json', '.')],
+    datas=[('templates', 'templates'), ('icons', 'icons'), ('VERSION', '.'), ('update_config.json', '.')],
     hiddenimports=['flask', 'waitress', 'pyodbc', 'pystray', 'PIL'],
     hookspath=[],
     hooksconfig={},
