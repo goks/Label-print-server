@@ -425,6 +425,22 @@ class GUIManager:
         self.update_meta_label = tk.Label(version_frame, text="", font=('Arial', 9),
                                           bg='white', fg='#7f8c8d', justify='left')
         self.update_meta_label.pack(anchor='w', pady=2)
+
+        self.update_progress_label = tk.Label(version_frame, text="", font=('Arial', 9),
+                                              bg='white', fg='#7f8c8d')
+        self.update_progress_label.pack(anchor='w', pady=2)
+
+        self.update_progress = tk.DoubleVar(value=0.0)
+        self.update_progress_bar = ttk.Progressbar(
+            version_frame,
+            orient='horizontal',
+            mode='determinate',
+            maximum=100,
+            variable=self.update_progress,
+            length=420
+        )
+        self.update_progress_bar.pack(fill='x', pady=5)
+        self.update_progress_bar.pack_forget()
         
         # Changelog
         tk.Label(parent, text="Release Notes:", font=('Arial', 10, 'bold'),
@@ -620,6 +636,7 @@ class GUIManager:
         elif result['status'] == 'no_update':
             self.update_status_label.config(text="✅ Up to date", fg='#27ae60')
             self.update_meta_label.config(text="")
+            self._reset_download_progress()
             self.install_update_btn.config(state='disabled')
             self.changelog_text.delete('1.0', 'end')
             self.changelog_text.insert('1.0', 'You are running the latest version.')
@@ -630,7 +647,48 @@ class GUIManager:
                 fg='#e74c3c'
             )
             self.update_meta_label.config(text="")
+            self._reset_download_progress()
             self.install_update_btn.config(state='disabled')
+
+    def _show_download_progress(self):
+        """Show the download progress widgets."""
+        if self.window and self.window.winfo_exists() and not self.update_progress_bar.winfo_ismapped():
+            self.update_progress_bar.pack(fill='x', pady=5)
+
+    def _reset_download_progress(self, hide=True):
+        """Reset the download progress UI."""
+        try:
+            self.update_progress_bar.stop()
+        except Exception:
+            pass
+        self.update_progress_bar.config(mode='determinate')
+        self.update_progress.set(0.0)
+        self.update_progress_label.config(text="")
+        if hide and self.update_progress_bar.winfo_ismapped():
+            self.update_progress_bar.pack_forget()
+
+    def _update_download_progress(self, downloaded, total_size):
+        """Render installer download progress in the Updates tab."""
+        self._show_download_progress()
+
+        downloaded_mb = downloaded / (1024 * 1024)
+        if total_size > 0:
+            total_mb = total_size / (1024 * 1024)
+            progress = min((downloaded / total_size) * 100, 100)
+            self.update_progress_bar.config(mode='determinate')
+            self.update_progress.set(progress)
+            self.update_progress_label.config(
+                text=f"Downloaded {downloaded_mb:.1f} MB / {total_mb:.1f} MB ({progress:.0f}%)"
+            )
+            self.update_status_label.config(
+                text=f"📥 Downloading EXE update... {progress:.0f}%",
+                fg='#3498db'
+            )
+        else:
+            self.update_progress_bar.config(mode='indeterminate')
+            self.update_progress_bar.start(10)
+            self.update_progress_label.config(text=f"Downloaded {downloaded_mb:.1f} MB")
+            self.update_status_label.config(text="📥 Downloading EXE update...", fg='#3498db')
     
     def _install_update(self):
         """Install available update"""
@@ -644,26 +702,55 @@ class GUIManager:
         )
         
         if result:
-            self.update_status_label.config(text="📥 Downloading EXE update...")
+            self.install_update_btn.config(state='disabled')
+            self.update_status_label.config(text="📥 Downloading EXE update...", fg='#3498db')
+            self._reset_download_progress(hide=False)
             
             def install():
                 try:
-                    download_path = self.update_manager.download_update(self.available_update)
+                    def progress_callback(downloaded, total_size):
+                        if self.window and self.window.winfo_exists():
+                            self.window.after(
+                                0,
+                                lambda: self._update_download_progress(downloaded, total_size)
+                            )
+
+                    download_path = self.update_manager.download_update(
+                        self.available_update,
+                        progress_callback=progress_callback
+                    )
+                    if self.window and self.window.winfo_exists():
+                        self.window.after(0, lambda: self.update_progress_label.config(
+                            text="Download complete. Preparing installer..."
+                        ))
                     install_result = self.update_manager.install_update(download_path, self.available_update)
                     
                     if self.window and self.window.winfo_exists():
                         self.window.after(0, lambda: self._finish_scheduled_update(install_result))
                 except Exception as e:
                     if self.window and self.window.winfo_exists():
-                        self.window.after(0, lambda: messagebox.showerror(
-                            "Update Failed",
-                            f"Failed to install update:\n{e}"
-                        ))
+                        error_message = str(e)
+                        self.window.after(
+                            0,
+                            lambda msg=error_message: self._handle_update_install_error(msg)
+                        )
             
             threading.Thread(target=install, daemon=True).start()
 
+    def _handle_update_install_error(self, error):
+        """Restore the Updates tab after a failed download/install."""
+        self._reset_download_progress()
+        self.install_update_btn.config(state='normal')
+        self.update_status_label.config(text="❌ Update failed", fg='#e74c3c')
+        messagebox.showerror(
+            "Update Failed",
+            f"Failed to install update:\n{error}"
+        )
+
     def _finish_scheduled_update(self, install_result):
         """Close the app so the updater script can replace the EXE and relaunch it."""
+        self.update_progress.set(100.0)
+        self.update_progress_label.config(text="Download complete. Launching installer...")
         messagebox.showinfo(
             "Update Ready",
             install_result.get(
@@ -892,47 +979,34 @@ class TrayApp:
         self.startup_thread.start()
 
     def _startup_server_worker(self):
-        """Delay and retry startup so boot-time launches don't miss settings or SQL readiness."""
+        """Start the server after boot, then keep retrying DB readiness until it succeeds."""
         boot_delay = self._get_boot_delay()
         if boot_delay > 0:
             print(f"Boot detected. Delaying server start by {boot_delay}s.")
             time.sleep(boot_delay)
 
-        started_at = time.time()
-        settings_ready = False
-        connectivity_checked = False
-
-        while self.running and (time.time() - started_at) < STARTUP_MAX_WAIT_SECONDS:
-            if not settings_ready:
-                server_app_module.load_db_settings(force_reload=True)
-                settings_ready = server_app_module.has_db_settings()
-                if not settings_ready:
-                    print(
-                        f"Database settings not ready yet. Retrying in "
-                        f"{STARTUP_SETTINGS_RETRY_SECONDS}s."
-                    )
-                    time.sleep(STARTUP_SETTINGS_RETRY_SECONDS)
-                    continue
-
-            if not connectivity_checked:
-                if not self._wait_for_sql_readiness():
-                    time.sleep(STARTUP_CONNECTIVITY_RETRY_SECONDS)
-                    continue
-                connectivity_checked = True
-
-            break
-
         if not self.running:
             return
-
-        if not settings_ready:
-            print("Starting server without confirmed database settings after startup timeout.")
-        elif not connectivity_checked:
-            print("Starting server without confirmed SQL connectivity after startup timeout.")
 
         self.server_mgr.start()
         if self.icon:
             self.icon.update_menu()
+
+        while self.running:
+            server_app_module.load_db_settings(force_reload=True)
+            if not server_app_module.has_db_settings():
+                print(
+                    f"Database settings not ready yet. Retrying in "
+                    f"{STARTUP_SETTINGS_RETRY_SECONDS}s."
+                )
+                time.sleep(STARTUP_SETTINGS_RETRY_SECONDS)
+                continue
+
+            if self._wait_for_sql_readiness():
+                print("Startup database readiness check succeeded.")
+                return
+
+            time.sleep(STARTUP_CONNECTIVITY_RETRY_SECONDS)
 
     def _wait_for_sql_readiness(self):
         """Check whether SQL Server is reachable before starting the app server."""

@@ -271,8 +271,11 @@ class UpdateManager:
                     continue
                 file_obj.write(chunk)
                 downloaded += len(chunk)
-                if progress_callback and total_size > 0:
-                    progress_callback((downloaded / total_size) * 100)
+                if progress_callback:
+                    progress_callback(downloaded, total_size)
+
+        if progress_callback:
+            progress_callback(downloaded, total_size)
 
         self.logger.info("Downloaded update to %s", download_path)
         return download_path

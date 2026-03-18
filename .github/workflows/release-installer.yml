@@ -17,12 +17,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.9"
           cache: "pip"
+
+      - name: Sync VERSION from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          Set-Content -Path VERSION -Value $version -NoNewline
 
       - name: Install dependencies
         run: |
@@ -58,4 +69,20 @@ jobs:
             gh release create $tag Output/LabelPrintServer_Setup.exe --title $tag --notes $notes
           } else {
             gh release upload $tag Output/LabelPrintServer_Setup.exe --clobber
+          }
+
+      - name: Commit VERSION back to main
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          Set-Content -Path VERSION -Value $env:RELEASE_VERSION -NoNewline
+          git diff --quiet -- VERSION
+          if ($LASTEXITCODE -ne 0) {
+            git add VERSION
+            git commit -m "Sync VERSION to $env:RELEASE_VERSION"
+            git push origin main
           }
