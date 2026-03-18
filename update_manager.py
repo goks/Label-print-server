@@ -17,11 +17,13 @@ import sys
 import tempfile
 import threading
 import time
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
 from packaging import version
+from packaging.version import InvalidVersion
 
 
 DEFAULT_GITHUB_REPO = "goks/Label-print-server"
@@ -148,7 +150,7 @@ class UpdateManager:
 
             self._record_check()
 
-            if version.parse(latest_version) <= version.parse(self.current_version):
+            if self._parse_version_for_compare(latest_version) <= self._parse_version_for_compare(self.current_version):
                 self.logger.info(
                     "No update needed. Current=%s Latest=%s",
                     self.current_version,
@@ -176,6 +178,24 @@ class UpdateManager:
             return update_info
         except Exception as exc:
             self.logger.error("Error checking for updates: %s", exc)
+            raise
+
+    def _parse_version_for_compare(self, version_str):
+        """Parse release tags like 3.1.5-fix2 into a comparable version."""
+        cleaned = (version_str or "").strip().lstrip("v")
+        try:
+            return version.parse(cleaned)
+        except InvalidVersion:
+            match = re.match(r"^(\d+\.\d+\.\d+)(?:[-_\.]?([A-Za-z]+)?(\d+)?)?$", cleaned)
+            if match:
+                base_version = match.group(1)
+                suffix_number = match.group(3)
+                if suffix_number:
+                    return version.parse(f"{base_version}.post{suffix_number}")
+                return version.parse(base_version)
+            fallback = re.search(r"(\d+\.\d+\.\d+)", cleaned)
+            if fallback:
+                return version.parse(fallback.group(1))
             raise
 
     def _record_check(self):
