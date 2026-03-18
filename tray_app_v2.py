@@ -6,8 +6,10 @@ Single-process implementation with integrated GUI
 import os
 import sys
 import threading
+import time
 import webbrowser
 import winreg
+import ctypes
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk, font as tkfont
@@ -19,6 +21,7 @@ from datetime import datetime
 # Add app directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+import app as server_app_module
 from app import app
 from waitress import serve
 from update_manager import UpdateManager
@@ -40,6 +43,11 @@ else:
 
 SERVER_HOST = '0.0.0.0'
 SERVER_PORT = 5000
+STARTUP_BOOT_DELAY_SECONDS = 20
+STARTUP_SETTINGS_RETRY_SECONDS = 10
+STARTUP_CONNECTIVITY_RETRY_SECONDS = 15
+STARTUP_MAX_WAIT_SECONDS = 180
+INSTANCE_MUTEX_NAME = "Local\\LabelPrintServerTrayApp"
 
 # =============================================================================
 # SERVER MANAGER
@@ -645,6 +653,8 @@ class TrayApp:
         self.gui_mgr = None
         self.icon = None
         self.running = True
+        self.instance_mutex = None
+        self.startup_thread = None
     
     def setup(self):
         """Setup the application"""
@@ -676,9 +686,8 @@ class TrayApp:
             "Label Print Server",
             menu
         )
-        
-        # Start server
-        self.server_mgr.start()
+
+        self._start_server_with_boot_logic()
     
     def _load_icon(self):
         """Load the tray icon image"""
@@ -783,6 +792,130 @@ class TrayApp:
     def _quit_from_menu(self, icon=None, item=None):
         """Quit from tray menu"""
         self.quit()
+
+    def _start_server_with_boot_logic(self):
+        """Start the server after startup dependencies are ready."""
+        if self.startup_thread and self.startup_thread.is_alive():
+            return
+
+        self.startup_thread = threading.Thread(
+            target=self._startup_server_worker,
+            daemon=True
+        )
+        self.startup_thread.start()
+
+    def _startup_server_worker(self):
+        """Delay and retry startup so boot-time launches don't miss settings or SQL readiness."""
+        boot_delay = self._get_boot_delay()
+        if boot_delay > 0:
+            print(f"Boot detected. Delaying server start by {boot_delay}s.")
+            time.sleep(boot_delay)
+
+        started_at = time.time()
+        settings_ready = False
+        connectivity_checked = False
+
+        while self.running and (time.time() - started_at) < STARTUP_MAX_WAIT_SECONDS:
+            if not settings_ready:
+                server_app_module.load_db_settings(force_reload=True)
+                settings_ready = server_app_module.has_db_settings()
+                if not settings_ready:
+                    print(
+                        f"Database settings not ready yet. Retrying in "
+                        f"{STARTUP_SETTINGS_RETRY_SECONDS}s."
+                    )
+                    time.sleep(STARTUP_SETTINGS_RETRY_SECONDS)
+                    continue
+
+            if not connectivity_checked:
+                if not self._wait_for_sql_readiness():
+                    time.sleep(STARTUP_CONNECTIVITY_RETRY_SECONDS)
+                    continue
+                connectivity_checked = True
+
+            break
+
+        if not self.running:
+            return
+
+        if not settings_ready:
+            print("Starting server without confirmed database settings after startup timeout.")
+        elif not connectivity_checked:
+            print("Starting server without confirmed SQL connectivity after startup timeout.")
+
+        self.server_mgr.start()
+        if self.icon:
+            self.icon.update_menu()
+
+    def _wait_for_sql_readiness(self):
+        """Check whether SQL Server is reachable before starting the app server."""
+        server = server_app_module.DB_SERVER
+        database = server_app_module.DB_NAME
+
+        if not server or not database:
+            return False
+
+        try:
+            available_drivers = server_app_module.pyodbc.drivers()
+        except Exception as e:
+            print(f"Unable to inspect SQL drivers during startup: {e}")
+            return True
+
+        driver_name = None
+        conn_str = None
+
+        if 'ODBC Driver 18 for SQL Server' in available_drivers:
+            driver_name = 'ODBC Driver 18 for SQL Server'
+            conn_str = (
+                f"DRIVER={{{driver_name}}};"
+                f"SERVER={server};"
+                f"DATABASE={database};"
+                f"Trusted_Connection=yes;"
+                f"TrustServerCertificate=yes;"
+                f"Connection Timeout=5;"
+            )
+        elif 'ODBC Driver 17 for SQL Server' in available_drivers:
+            driver_name = 'ODBC Driver 17 for SQL Server'
+            conn_str = (
+                f"DRIVER={{{driver_name}}};"
+                f"SERVER={server};"
+                f"DATABASE={database};"
+                f"Integrated Security=SSPI;"
+                f"Connection Timeout=5;"
+            )
+        elif 'SQL Server' in available_drivers:
+            driver_name = 'SQL Server'
+            conn_str = (
+                f"DRIVER={{{driver_name}}};"
+                f"SERVER={server};"
+                f"DATABASE={database};"
+                f"Trusted_Connection=yes;"
+                f"Connection Timeout=5;"
+            )
+
+        if not conn_str:
+            print("No SQL Server ODBC driver found during startup check. Continuing.")
+            return True
+
+        try:
+            conn = server_app_module.pyodbc.connect(conn_str)
+            conn.close()
+            print(f"Startup SQL check passed using {driver_name}.")
+            return True
+        except Exception as e:
+            print(
+                f"Startup SQL check failed for {server}\\{database}: {e}. "
+                f"Retrying in {STARTUP_CONNECTIVITY_RETRY_SECONDS}s."
+            )
+            return False
+
+    def _get_boot_delay(self):
+        """Apply a startup delay only when Windows has just booted."""
+        try:
+            uptime_seconds = ctypes.windll.kernel32.GetTickCount64() / 1000
+            return STARTUP_BOOT_DELAY_SECONDS if uptime_seconds < 300 else 0
+        except Exception:
+            return 0
     
     def quit(self):
         """Quit the application"""
@@ -812,6 +945,7 @@ class TrayApp:
         
         # Cleanup
         self._cleanup_lock_file()
+        self._release_single_instance()
         
         # Exit
         sys.exit(0)
@@ -850,7 +984,16 @@ class TrayApp:
             self.quit()
     
     def _check_single_instance(self):
-        """Ensure only one instance is running"""
+        """Ensure only one instance is running."""
+        try:
+            self.instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, INSTANCE_MUTEX_NAME)
+            if not self.instance_mutex:
+                print("Failed to create instance mutex, falling back to lock file check.")
+            elif ctypes.windll.kernel32.GetLastError() == 183:
+                return False
+        except Exception as e:
+            print(f"Mutex check failed: {e}")
+
         if LOCK_FILE.exists():
             try:
                 pid = int(LOCK_FILE.read_text().strip())
@@ -876,6 +1019,15 @@ class TrayApp:
                     pass
         
         return True
+
+    def _release_single_instance(self):
+        """Release the Windows mutex used for single-instance protection."""
+        try:
+            if self.instance_mutex:
+                ctypes.windll.kernel32.CloseHandle(self.instance_mutex)
+                self.instance_mutex = None
+        except Exception as e:
+            print(f"Error releasing instance mutex: {e}")
 
 # =============================================================================
 # MAIN

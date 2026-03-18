@@ -1159,7 +1159,29 @@
                 }
             } else {
                 copies = parseInt(copyInput) || 0;
-                if (copies <= 0) {
+                if (copies === 0) {
+                    copyCountModal.style.display = 'none';
+                    printStatus.classList.remove('hidden');
+                    printStatus.className = 'print-status success';
+                    printStatus.innerHTML = '✅ No sticker needed. Ready for next quotation.';
+                    document.body.classList.remove('printing');
+
+                    quotationInput.value = '';
+                    quotationInput.focus();
+                    currentPartyData = null;
+                    partyDiv.innerHTML = '<div class="party-placeholder">Enter quotation number to view customer details</div>';
+                    partyDiv.classList.remove('populated');
+                    printBtn.classList.add('hidden');
+                    resultsDiv.classList.add('hidden');
+                    previewDiv.classList.add('hidden');
+
+                    setTimeout(() => {
+                        printStatus.classList.add('hidden');
+                    }, 2000);
+                    return;
+                }
+
+                if (copies < 0) {
                     alert('Please enter a valid number of copies (1 or more, or .number for heavy items)');
                     return;
                 }

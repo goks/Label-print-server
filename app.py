@@ -114,6 +114,36 @@ app.config.from_object(Config)
 # Configure for reverse proxy deployment
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+
+class SafeTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """Timed rotating handler that degrades gracefully on Windows file locks."""
+
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except PermissionError:
+            # Another process still has the old log file open.
+            # Keep serving requests and retry on the next log write.
+            pass
+
+
+def _use_process_scoped_logs():
+    """Use per-process log files for debugger/reloader runs to avoid Windows file locks."""
+    return (
+        Config.ENVIRONMENT == 'development'
+        or os.environ.get('FLASK_DEBUG') == '1'
+        or os.environ.get('WERKZEUG_RUN_MAIN') is not None
+    )
+
+
+def _log_path(log_dir, filename):
+    """Return the correct log file path for the current runtime mode."""
+    if not _use_process_scoped_logs():
+        return os.path.join(log_dir, filename)
+
+    stem, ext = os.path.splitext(filename)
+    return os.path.join(log_dir, f"{stem}.{os.getpid()}{ext}")
+
 def setup_comprehensive_logging():
     """Setup comprehensive production logging with multiple handlers"""
     # Use AppData/Local for logs when installed in Program Files
@@ -135,6 +165,18 @@ def setup_comprehensive_logging():
     # Clear existing handlers
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
+
+    app_logger = logging.getLogger(app.name)
+    for handler in app_logger.handlers[:]:
+        app_logger.removeHandler(handler)
+
+    db_logger = logging.getLogger('database')
+    for handler in db_logger.handlers[:]:
+        db_logger.removeHandler(handler)
+
+    access_logger = logging.getLogger('access')
+    for handler in access_logger.handlers[:]:
+        access_logger.removeHandler(handler)
     
     # Create formatters
     detailed_formatter = logging.Formatter(
@@ -145,8 +187,8 @@ def setup_comprehensive_logging():
     )
     
     # 1. Main application log (daily rotation)
-    app_handler = TimedRotatingFileHandler(
-        os.path.join(log_dir, 'label_print_server.log'),
+    app_handler = SafeTimedRotatingFileHandler(
+        _log_path(log_dir, 'label_print_server.log'),
         when='midnight',
         interval=1,
         backupCount=30,
@@ -157,7 +199,7 @@ def setup_comprehensive_logging():
     
     # 2. Error log (separate file for errors only)
     error_handler = RotatingFileHandler(
-        os.path.join(log_dir, 'errors.log'),
+        _log_path(log_dir, 'errors.log'),
         maxBytes=50 * 1024 * 1024,  # 50MB
         backupCount=10,
         encoding='utf-8'
@@ -166,8 +208,8 @@ def setup_comprehensive_logging():
     error_handler.setFormatter(detailed_formatter)
     
     # 3. Database operations log
-    db_handler = TimedRotatingFileHandler(
-        os.path.join(log_dir, 'database.log'),
+    db_handler = SafeTimedRotatingFileHandler(
+        _log_path(log_dir, 'database.log'),
         when='midnight',
         interval=1,
         backupCount=14,
@@ -177,8 +219,8 @@ def setup_comprehensive_logging():
     db_handler.setFormatter(detailed_formatter)
     
     # 4. Security/Access log
-    access_handler = TimedRotatingFileHandler(
-        os.path.join(log_dir, 'access.log'),
+    access_handler = SafeTimedRotatingFileHandler(
+        _log_path(log_dir, 'access.log'),
         when='midnight',
         interval=1,
         backupCount=90,
@@ -199,15 +241,16 @@ def setup_comprehensive_logging():
     app.logger.addHandler(error_handler)
     app.logger.addHandler(console_handler)
     app.logger.setLevel(logging.INFO)
+    app.logger.propagate = False
     
     # Create specialized loggers
-    db_logger = logging.getLogger('database')
     db_logger.addHandler(db_handler)
     db_logger.setLevel(logging.DEBUG)
+    db_logger.propagate = False
     
-    access_logger = logging.getLogger('access')
     access_logger.addHandler(access_handler)
     access_logger.setLevel(logging.INFO)
+    access_logger.propagate = False
     
     # Suppress noisy third-party loggers
     logging.getLogger('werkzeug').setLevel(logging.WARNING)
@@ -378,13 +421,13 @@ def get_available_printers():
         print(f"Server: Error getting printers: {e}")
         return []
 
-def load_db_settings():
-    """Load database settings from file or environment variables with caching"""
+def load_db_settings(force_reload=False):
+    """Load database settings from file or environment variables with caching."""
     global DB_SERVER, DB_NAME, SELECTED_PRINTER, BARTENDER_TEMPLATE, BARTENDER_HEAVY_TEMPLATE, _settings_cache
     
     # Check if settings are already cached in memory
     with _settings_lock:
-        if _settings_cache['last_loaded'] is not None:
+        if not force_reload and _settings_cache['last_loaded'] is not None:
             # Return cached values
             DB_SERVER = _settings_cache['server']
             DB_NAME = _settings_cache['database']
@@ -418,6 +461,11 @@ def load_db_settings():
                 print(f"Server: BarTender Heavy Items Template: {BARTENDER_HEAVY_TEMPLATE}")
         except Exception as e:
             print(f"Error loading settings: {e}")
+
+
+def has_db_settings():
+    """Return True when the SQL Server settings are available."""
+    return bool(DB_SERVER and DB_NAME)
 
 def save_db_settings(server, database, printer=None, bartender_template=None, bartender_heavy_template=None):
     """Save database, printer and BarTender settings to file and update cache"""
@@ -522,6 +570,9 @@ def _get_party_info_impl(quotation_number):
         db_logger.debug('Database lookup started: quotation=%s, formatted=%s', quotation_number, formatted_vch_no)
     
     # Check if database settings are configured
+    if not DB_SERVER or not DB_NAME:
+        load_db_settings(force_reload=True)
+
     if not DB_SERVER or not DB_NAME:
         db_logger.error('Database configuration missing: server=%s, database=%s', DB_SERVER, DB_NAME)
         return None
