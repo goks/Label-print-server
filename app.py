@@ -346,9 +346,11 @@ if 'Program Files' in app_dir:
                            'LabelPrintServer', 'data')
     os.makedirs(data_dir, exist_ok=True)
     SETTINGS_FILE = os.path.join(data_dir, 'db_settings.json')
+    LEGACY_SETTINGS_FILE = os.path.join(app_dir, 'db_settings.json')
 else:
     # Running from development directory
     SETTINGS_FILE = 'db_settings.json'
+    LEGACY_SETTINGS_FILE = SETTINGS_FILE
 
 SELECTED_PRINTER = None  # Will store the selected printer name
 BARTENDER_TEMPLATE = None  # Will store the BarTender template path
@@ -436,10 +438,14 @@ def load_db_settings(force_reload=False):
             BARTENDER_HEAVY_TEMPLATE = _settings_cache['bartender_heavy_template']
             return
     
+    settings_path = SETTINGS_FILE
+    if not os.path.exists(settings_path) and LEGACY_SETTINGS_FILE != SETTINGS_FILE and os.path.exists(LEGACY_SETTINGS_FILE):
+        settings_path = LEGACY_SETTINGS_FILE
+
     # Load from file if not cached
-    if os.path.exists(SETTINGS_FILE):
+    if os.path.exists(settings_path):
         try:
-            with open(SETTINGS_FILE, 'r') as f:
+            with open(settings_path, 'r') as f:
                 settings = json.load(f)
                 DB_SERVER = settings.get('server', DB_SERVER)
                 DB_NAME = settings.get('database', DB_NAME)
@@ -455,6 +461,15 @@ def load_db_settings(force_reload=False):
                     _settings_cache['bartender_template'] = BARTENDER_TEMPLATE
                     _settings_cache['bartender_heavy_template'] = BARTENDER_HEAVY_TEMPLATE
                     _settings_cache['last_loaded'] = time.time()
+
+                # Migrate legacy install-folder settings into AppData on first successful load.
+                if settings_path == LEGACY_SETTINGS_FILE and SETTINGS_FILE != LEGACY_SETTINGS_FILE:
+                    try:
+                        with open(SETTINGS_FILE, 'w') as migrated_file:
+                            json.dump(settings, migrated_file)
+                        print(f"Server: Migrated legacy settings to {SETTINGS_FILE}")
+                    except Exception as migrate_error:
+                        print(f"Server: Failed to migrate legacy settings: {migrate_error}")
                 
                 print(f"Server: Loaded settings - Server: {DB_SERVER}, DB: {DB_NAME}, Printer: {SELECTED_PRINTER}")
                 print(f"Server: BarTender Template: {BARTENDER_TEMPLATE}")

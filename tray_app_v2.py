@@ -1163,7 +1163,6 @@ class TrayApp:
                 
                 # Check if process exists
                 try:
-                    import ctypes
                     handle = ctypes.windll.kernel32.OpenProcess(0x400, False, pid)
                     if handle:
                         ctypes.windll.kernel32.CloseHandle(handle)
