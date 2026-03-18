@@ -52,7 +52,7 @@ class UpdateManager:
 
     def _get_data_dir(self):
         """Return a writable application data directory."""
-        if "Program Files" in str(self.app_dir):
+        if getattr(sys, "frozen", False) or "Program Files" in str(self.app_dir):
             return Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "LabelPrintServer"
         return self.app_dir
 

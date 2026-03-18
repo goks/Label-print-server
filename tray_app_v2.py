@@ -34,7 +34,7 @@ from printed_db import init_db, get_recent
 APP_DIR = Path(__file__).parent
 
 # Use AppData for lock file when installed in Program Files
-if 'Program Files' in str(APP_DIR):
+if getattr(sys, 'frozen', False) or 'Program Files' in str(APP_DIR):
     data_dir = Path(os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))) / 'LabelPrintServer' / 'data'
     data_dir.mkdir(parents=True, exist_ok=True)
     LOCK_FILE = data_dir / '.tray_running'

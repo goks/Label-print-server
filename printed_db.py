@@ -1,18 +1,17 @@
 import sqlite3
 import os
+import sys
 import threading
 from datetime import datetime, timezone
 
 # Use AppData for database when installed in Program Files
-app_dir = os.path.dirname(__file__)
-if 'Program Files' in app_dir:
-    # Running from installation - use user's AppData
-    data_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 
+app_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+if getattr(sys, 'frozen', False) or 'Program Files' in app_dir:
+    data_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
                            'LabelPrintServer', 'data')
     os.makedirs(data_dir, exist_ok=True)
     DB_FILE = os.path.join(data_dir, 'printed_records.db')
 else:
-    # Running from development directory
     DB_FILE = os.path.join(app_dir, 'printed_records.db')
 
 # Thread-local storage for database connections

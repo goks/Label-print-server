@@ -112,3 +112,4 @@ templates/index_old.html
 
 temp_download
 *.exe
+*.bat

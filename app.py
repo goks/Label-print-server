@@ -20,6 +20,10 @@ load_dotenv()
 import printed_db
 from update_manager import UpdateManager, UpdateChecker
 
+IS_FROZEN = getattr(sys, 'frozen', False)
+APP_BASE_DIR = Path(sys.executable).parent if IS_FROZEN else Path(__file__).parent
+USER_DATA_DIR = Path(os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))) / 'LabelPrintServer'
+
 # Production configuration
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY') or os.urandom(32).hex()
@@ -147,13 +151,10 @@ def _log_path(log_dir, filename):
 def setup_comprehensive_logging():
     """Setup comprehensive production logging with multiple handlers"""
     # Use AppData/Local for logs when installed in Program Files
-    app_dir = os.path.dirname(__file__)
-    if 'Program Files' in app_dir:
-        # Running from installation - use user's AppData
-        log_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 
-                               'LabelPrintServer', 'logs')
+    app_dir = str(APP_BASE_DIR)
+    if IS_FROZEN or 'Program Files' in app_dir:
+        log_dir = str(USER_DATA_DIR / 'logs')
     else:
-        # Running from development directory
         log_dir = os.path.join(app_dir, 'logs')
     
     os.makedirs(log_dir, exist_ok=True)
@@ -339,11 +340,9 @@ DB_SERVER = os.environ.get('DB_SERVER')
 DB_NAME = os.environ.get('DB_NAME')
 
 # Use AppData for settings when installed in Program Files
-app_dir = os.path.dirname(__file__)
-if 'Program Files' in app_dir:
-    # Running from installation - use user's AppData
-    data_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 
-                           'LabelPrintServer', 'data')
+app_dir = str(APP_BASE_DIR)
+if IS_FROZEN or 'Program Files' in app_dir:
+    data_dir = str(USER_DATA_DIR / 'data')
     os.makedirs(data_dir, exist_ok=True)
     SETTINGS_FILE = os.path.join(data_dir, 'db_settings.json')
     LEGACY_SETTINGS_FILE = os.path.join(app_dir, 'db_settings.json')
