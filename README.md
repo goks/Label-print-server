@@ -121,6 +121,17 @@ Label Print Server is a production-ready web application that streamlines wareho
 - **Performance Monitoring** - Request timing, slow query detection, and performance metrics
 - **Auto-Update System** - GitHub-based version checking and update installation
 
+## GitHub Releases
+
+To publish an update that the tray updater can detect:
+
+1. Update the `VERSION` file.
+2. Commit and push your changes.
+3. Create and push a git tag like `v3.1.3`.
+4. GitHub Actions will build `Output/LabelPrintServer_Setup.exe` and attach it to the release for that tag.
+
+The tray updater checks GitHub releases for a newer `LabelPrintServer_Setup.exe` asset and offers users a download-and-update option from the Updates tab.
+
 ### System Integration
 - **SQL Server Integration** - Native Windows Authentication with driver auto-detection
 - **Printer Management** - Network and local printer support with configuration

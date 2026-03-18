@@ -1,601 +1,427 @@
 """
-Auto-Update System for Label Print Server
-Checks GitHub releases and handles automatic updates
+GitHub release updater for Label Print Server.
+
+This updater is designed for the installed tray application:
+- checks GitHub releases for a newer EXE asset
+- downloads the EXE to a temp folder
+- stages a small updater script to replace the running EXE after exit
+- relaunches the application automatically
 """
 
-import os
-import sys
 import json
-import requests
-import zipfile
-import tempfile
+import logging
+import os
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 import time
-import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-import winreg
+
+import requests
 from packaging import version
+
+
+DEFAULT_GITHUB_REPO = "goks/Label-print-server"
+DEFAULT_INSTALLER_NAME = "LabelPrintServer_Setup.exe"
+
 
 class UpdateManager:
     def __init__(self):
-        self.github_repo = "goks/Label-print-server"  # Update with your actual repo
-        self.current_version = self.get_current_version()
         self.app_dir = Path(__file__).parent.absolute()
-        self.update_config_file = self.app_dir / "update_config.json"
-        
-        # Use AppData for logs when installed in Program Files
-        if 'Program Files' in str(self.app_dir):
-            log_dir = Path(os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))) / 'LabelPrintServer' / 'logs'
-            log_dir.mkdir(parents=True, exist_ok=True)
-            self.update_log_file = log_dir / "updates.log"
-        else:
-            self.update_log_file = self.app_dir / "logs" / "updates.log"
-            self.update_log_file.parent.mkdir(exist_ok=True)
-        
-        # Setup logging
-        self.logger = logging.getLogger('UpdateManager')
-        handler = logging.FileHandler(self.update_log_file)
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
-        self.logger.addHandler(handler)
+        self.data_dir = self._get_data_dir()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir = self.data_dir / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.backup_dir = self.data_dir / "backups"
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+
+        self.update_config_file = self.data_dir / "update_config.json"
+        self.logger = logging.getLogger("UpdateManager")
         self.logger.setLevel(logging.INFO)
-        
-        # Load or create update configuration
+        self.logger.propagate = False
+        self._ensure_logger_handler()
+
+        self.current_version = self.get_current_version()
         self.config = self.load_update_config()
-    
+        self.github_repo = self.config.get("github_repo", DEFAULT_GITHUB_REPO)
+
+    def _get_data_dir(self):
+        """Return a writable application data directory."""
+        if "Program Files" in str(self.app_dir):
+            return Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "LabelPrintServer"
+        return self.app_dir
+
+    def _ensure_logger_handler(self):
+        """Attach a single file handler even across repeated imports."""
+        log_file = self.log_dir / "updates.log"
+        log_path = str(log_file)
+
+        for handler in self.logger.handlers[:]:
+            if isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", None) == log_path:
+                return
+            self.logger.removeHandler(handler)
+
+        handler = logging.FileHandler(log_file, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+        self.logger.addHandler(handler)
+
     def get_current_version(self):
-        """Get current application version"""
+        """Get the current application version."""
         try:
-            # Try to read from version file first
-            version_file = Path(__file__).parent / "VERSION"
+            version_file = self.app_dir / "VERSION"
             if version_file.exists():
-                return version_file.read_text().strip()
-            
-            # Try to read from CHANGELOG.md
-            changelog_file = Path(__file__).parent / "CHANGELOG.md"
-            if changelog_file.exists():
-                content = changelog_file.read_text()
-                # Look for version pattern like ## [2.0.0] or # v2.0.0
-                import re
-                version_match = re.search(r'##?\s*\[?v?(\d+\.\d+\.\d+)\]?', content)
-                if version_match:
-                    return version_match.group(1)
-            
-            # Fallback to default version
-            return "2.0.0"
-        except Exception as e:
-            self.logger.warning(f"Could not determine version: {e}")
-            return "2.0.0"
-    
+                return version_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+        return "0.0.0"
+
     def load_update_config(self):
-        """Load update configuration"""
+        """Load updater configuration."""
         default_config = {
             "auto_check": True,
-            "auto_install": False,  # Manual approval by default
+            "auto_install": False,
             "check_interval_hours": 24,
             "last_check": None,
-            "update_channel": "stable",  # stable, beta, all
+            "last_notified_version": None,
+            "update_channel": "stable",
             "backup_enabled": True,
-            "notification_enabled": True
+            "notification_enabled": True,
+            "github_repo": DEFAULT_GITHUB_REPO,
+            "asset_name_contains": "LabelPrintServer_Setup",
         }
-        
+
         try:
             if self.update_config_file.exists():
-                with open(self.update_config_file, 'r') as f:
-                    config = json.load(f)
-                # Merge with defaults for new settings
-                for key, value in default_config.items():
-                    if key not in config:
-                        config[key] = value
-                return config
-        except Exception as e:
-            self.logger.error(f"Error loading config: {e}")
-        
+                with open(self.update_config_file, "r", encoding="utf-8") as file_obj:
+                    config = json.load(file_obj)
+                merged = default_config.copy()
+                merged.update(config)
+                if merged.get("asset_name_contains") == "LabelPrintServer":
+                    merged["asset_name_contains"] = "LabelPrintServer_Setup"
+                return merged
+        except Exception as exc:
+            self.logger.error("Error loading update config: %s", exc)
+
         return default_config
-    
+
     def save_update_config(self):
-        """Save update configuration"""
-        try:
-            with open(self.update_config_file, 'w') as f:
-                json.dump(self.config, f, indent=2)
-        except Exception as e:
-            self.logger.error(f"Error saving config: {e}")
-    
+        """Persist updater configuration."""
+        with open(self.update_config_file, "w", encoding="utf-8") as file_obj:
+            json.dump(self.config, file_obj, indent=2)
+
+    def should_notify_for(self, version_str):
+        """Return True if the user has not already been notified for this version."""
+        if not self.config.get("notification_enabled", True):
+            return False
+        return self.config.get("last_notified_version") != version_str
+
+    def mark_notified(self, version_str):
+        """Persist the last version the user has been notified about."""
+        self.config["last_notified_version"] = version_str
+        self.save_update_config()
+
     def check_for_updates(self, force=False):
-        """Check GitHub for new releases"""
+        """Check GitHub releases for a newer installer build."""
         try:
-            # Check if enough time has passed since last check
             if not force and self.config.get("last_check"):
                 last_check = datetime.fromisoformat(self.config["last_check"])
-                next_check = last_check + timedelta(hours=self.config["check_interval_hours"])
+                next_check = last_check + timedelta(hours=self.config.get("check_interval_hours", 24))
                 if datetime.now() < next_check:
-                    self.logger.info("Update check skipped - too soon since last check")
+                    self.logger.info("Skipping update check because interval has not elapsed yet")
                     return None
-            
-            self.logger.info("Checking for updates...")
-            
-            # Get latest release from GitHub API
-            api_url = f"https://api.github.com/repos/{self.github_repo}/releases"
-            
-            response = requests.get(api_url, timeout=10)
-            response.raise_for_status()
-            
-            releases = response.json()
-            
+
+            releases = self._fetch_releases()
             if not releases:
-                self.logger.info("No releases found")
+                self._record_check()
                 return None
-            
-            # Filter releases based on update channel
+
             filtered_releases = self.filter_releases_by_channel(releases)
-            
             if not filtered_releases:
-                self.logger.info(f"No releases found for channel: {self.config['update_channel']}")
+                self._record_check()
                 return None
-            
+
             latest_release = filtered_releases[0]
-            latest_version = latest_release["tag_name"].lstrip('v')
-            
-            # Update last check time
-            self.config["last_check"] = datetime.now().isoformat()
-            self.save_update_config()
-            
-            # Compare versions
-            if version.parse(latest_version) > version.parse(self.current_version):
-                update_info = {
-                    "version": latest_version,
-                    "release": latest_release,
-                    "download_url": self.get_download_url(latest_release),
-                    "changelog": latest_release.get("body", ""),
-                    "published_at": latest_release["published_at"],
-                    "is_prerelease": latest_release["prerelease"]
-                }
-                
-                self.logger.info(f"Update available: {latest_version}")
-                return update_info
-            else:
-                self.logger.info(f"No update needed. Current: {self.current_version}, Latest: {latest_version}")
+            latest_version = latest_release["tag_name"].lstrip("v")
+
+            self._record_check()
+
+            if version.parse(latest_version) <= version.parse(self.current_version):
+                self.logger.info(
+                    "No update needed. Current=%s Latest=%s",
+                    self.current_version,
+                    latest_version,
+                )
                 return None
-                
-        except Exception as e:
-            self.logger.error(f"Error checking for updates: {e}")
-            return None
-    
-    def filter_releases_by_channel(self, releases):
-        """Filter releases based on update channel"""
-        if self.config["update_channel"] == "stable":
-            return [r for r in releases if not r["prerelease"]]
-        elif self.config["update_channel"] == "beta":
-            return [r for r in releases if r["prerelease"]]
-        else:  # all
-            return releases
-    
-    def get_download_url(self, release):
-        """Get download URL for the release"""
-        # Look for Windows zip file in assets
-        for asset in release.get("assets", []):
-            if asset["name"].endswith(".zip") and ("windows" in asset["name"].lower() or "win" in asset["name"].lower()):
-                return asset["browser_download_url"]
-        
-        # Fallback to source code zip
-        return release["zipball_url"]
-    
-    def download_update(self, update_info, progress_callback=None):
-        """Download update package"""
-        try:
-            download_url = update_info["download_url"]
-            version_str = update_info["version"]
-            
-            self.logger.info(f"Downloading update {version_str} from {download_url}")
-            
-            # Create temporary download directory
-            temp_dir = Path(tempfile.gettempdir()) / f"label_print_server_update_{version_str}"
-            temp_dir.mkdir(exist_ok=True)
-            
-            download_path = temp_dir / f"update_{version_str}.zip"
-            
-            # Download with progress
-            response = requests.get(download_url, stream=True, timeout=30)
+
+            asset = self._select_release_asset(latest_release)
+            if not asset:
+                raise RuntimeError("Latest release does not contain a downloadable installer asset")
+
+            update_info = {
+                "version": latest_version,
+                "release_name": latest_release.get("name") or latest_release["tag_name"],
+                "download_url": asset["browser_download_url"],
+                "asset_name": asset["name"],
+                "asset_size": asset.get("size", 0),
+                "published_at": latest_release.get("published_at"),
+                "changelog": latest_release.get("body") or "No release notes provided.",
+                "html_url": latest_release.get("html_url"),
+                "is_prerelease": latest_release.get("prerelease", False),
+            }
+
+            self.logger.info("Update available: %s (%s)", update_info["version"], update_info["asset_name"])
+            return update_info
+        except Exception as exc:
+            self.logger.error("Error checking for updates: %s", exc)
+            raise
+
+    def _record_check(self):
+        self.config["last_check"] = datetime.now().isoformat()
+        self.save_update_config()
+
+    def _fetch_releases(self):
+        """Fetch release metadata from GitHub."""
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "LabelPrintServer-Updater",
+        }
+
+        if self.config.get("update_channel") == "stable":
+            api_url = f"https://api.github.com/repos/{self.github_repo}/releases/latest"
+            response = requests.get(api_url, headers=headers, timeout=20)
             response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
-            with open(download_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if progress_callback and total_size > 0:
-                            progress = (downloaded / total_size) * 100
-                            progress_callback(progress)
-            
-            self.logger.info(f"Update downloaded to {download_path}")
-            return download_path
-            
-        except Exception as e:
-            self.logger.error(f"Error downloading update: {e}")
-            raise
-    
-    def create_backup(self):
-        """Create backup of current installation"""
-        if not self.config["backup_enabled"]:
+            return [response.json()]
+
+        api_url = f"https://api.github.com/repos/{self.github_repo}/releases"
+        response = requests.get(api_url, headers=headers, timeout=20)
+        response.raise_for_status()
+        return response.json()
+
+    def filter_releases_by_channel(self, releases):
+        """Filter releases based on configured update channel."""
+        channel = self.config.get("update_channel", "stable")
+        if channel == "stable":
+            return [release for release in releases if not release.get("prerelease")]
+        if channel == "beta":
+            return [release for release in releases if release.get("prerelease")]
+        return releases
+
+    def _select_release_asset(self, release):
+        """Pick the installer asset the updater should download."""
+        exe_assets = [asset for asset in release.get("assets", []) if asset["name"].lower().endswith(".exe")]
+        if not exe_assets:
             return None
-        
-        try:
-            backup_dir = self.app_dir / "backups"
-            backup_dir.mkdir(exist_ok=True)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"backup_{self.current_version}_{timestamp}.zip"
-            backup_path = backup_dir / backup_name
-            
-            self.logger.info(f"Creating backup: {backup_path}")
-            
-            # Files to backup (exclude logs, temp files, etc.)
-            backup_files = [
-                "app.py", "wsgi.py", "tray_app.py", "tray_gui.py",
-                "service_manager.py", "auto_startup.py", "printed_db.py",
-                "requirements.txt", "templates/", "icons/",
-                ".env", "db_settings.json", "update_config.json"
-            ]
-            
-            with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as backup_zip:
-                for file_pattern in backup_files:
-                    file_path = self.app_dir / file_pattern
-                    if file_path.exists():
-                        if file_path.is_file():
-                            backup_zip.write(file_path, file_path.name)
-                        elif file_path.is_dir():
-                            for sub_file in file_path.rglob("*"):
-                                if sub_file.is_file():
-                                    arcname = str(sub_file.relative_to(self.app_dir))
-                                    backup_zip.write(sub_file, arcname)
-            
-            # Keep only last 5 backups
-            self.cleanup_old_backups(backup_dir, keep=5)
-            
-            self.logger.info(f"Backup created successfully: {backup_path}")
-            return backup_path
-            
-        except Exception as e:
-            self.logger.error(f"Error creating backup: {e}")
-            return None
-    
-    def cleanup_old_backups(self, backup_dir, keep=5):
-        """Clean up old backup files"""
-        try:
-            backup_files = list(backup_dir.glob("backup_*.zip"))
-            backup_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            
-            for old_backup in backup_files[keep:]:
-                old_backup.unlink()
-                self.logger.info(f"Deleted old backup: {old_backup}")
-        except Exception as e:
-            self.logger.error(f"Error cleaning up backups: {e}")
-    
+
+        preferred_name = self.config.get("asset_name_contains", "LabelPrintServer").lower()
+
+        for asset in exe_assets:
+            if preferred_name in asset["name"].lower():
+                return asset
+
+        for asset in exe_assets:
+            if "setup" not in asset["name"].lower():
+                return asset
+
+        return exe_assets[0]
+
+    def download_update(self, update_info, progress_callback=None):
+        """Download the latest installer asset to a temp directory."""
+        download_dir = Path(tempfile.gettempdir()) / "LabelPrintServerUpdate"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        download_path = download_dir / update_info["asset_name"]
+
+        self.logger.info("Downloading update asset from %s", update_info["download_url"])
+
+        headers = {
+            "Accept": "application/octet-stream",
+            "User-Agent": "LabelPrintServer-Updater",
+        }
+        response = requests.get(update_info["download_url"], headers=headers, stream=True, timeout=60)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get("content-length", 0))
+        downloaded = 0
+
+        with open(download_path, "wb") as file_obj:
+            for chunk in response.iter_content(chunk_size=1024 * 64):
+                if not chunk:
+                    continue
+                file_obj.write(chunk)
+                downloaded += len(chunk)
+                if progress_callback and total_size > 0:
+                    progress_callback((downloaded / total_size) * 100)
+
+        self.logger.info("Downloaded update to %s", download_path)
+        return download_path
+
     def install_update(self, download_path, update_info):
-        """Install the downloaded update"""
-        backup_path = None  # Initialize backup_path
-        try:
-            version_str = update_info["version"]
-            self.logger.info(f"Installing update {version_str}")
-            
-            # Create backup before installing
-            backup_path = self.create_backup()
-            
-            # Extract update
-            temp_extract_dir = Path(tempfile.gettempdir()) / f"extract_{version_str}"
-            temp_extract_dir.mkdir(exist_ok=True)
-            
-            with zipfile.ZipFile(download_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_extract_dir)
-            
-            # Find the actual application files in the extracted directory
-            app_files_dir = self.find_app_files_directory(temp_extract_dir)
-            
-            if not app_files_dir:
-                raise Exception("Could not find application files in update package")
-            
-            # Stop services before update
-            self.stop_services()
-            
-            # Install files (preserve user config)
-            self.install_files(app_files_dir)
-            
-            # Update version file
-            version_file = self.app_dir / "VERSION"
-            version_file.write_text(version_str)
-            
-            # Update dependencies
-            self.update_dependencies()
-            
-            # Start services
-            self.start_services()
-            
-            self.logger.info(f"Update {version_str} installed successfully")
-            
-            # Clean up
-            shutil.rmtree(temp_extract_dir, ignore_errors=True)
-            download_path.unlink(missing_ok=True)
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error installing update: {e}")
-            # Attempt to restore from backup if available
-            if backup_path and backup_path.exists():
-                self.logger.info("Attempting to restore from backup...")
-                try:
-                    self.restore_from_backup(backup_path)
-                except Exception as restore_error:
-                    self.logger.error(f"Failed to restore from backup: {restore_error}")
-            raise
-    
-    def find_app_files_directory(self, extract_dir):
-        """Find the directory containing application files"""
-        # Look for main app files
-        for root, dirs, files in os.walk(extract_dir):
-            if "app.py" in files and "wsgi.py" in files:
-                return Path(root)
-        return None
-    
-    def install_files(self, source_dir):
-        """Install files from source directory to application directory"""
-        # Files to update (preserve user configurations)
-        update_files = [
-            "app.py", "wsgi.py", "tray_app.py", "tray_gui.py",
-            "service_manager.py", "auto_startup.py", "printed_db.py",
-            "requirements.txt", "templates/", "icons/", "static/"
-        ]
-        
-        preserve_files = [
-            ".env", "db_settings.json", "update_config.json",
-            "logs/", "backups/", ".tray_running", "printed_records.db"
-        ]
-        
-        for file_pattern in update_files:
-            source_path = source_dir / file_pattern
-            target_path = self.app_dir / file_pattern
-            
-            if source_path.exists():
-                if source_path.is_file():
-                    # Copy file
-                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source_path, target_path)
-                elif source_path.is_dir():
-                    # Copy directory
-                    if target_path.exists():
-                        shutil.rmtree(target_path)
-                    shutil.copytree(source_path, target_path)
-    
-    def update_dependencies(self):
-        """Update Python dependencies"""
-        try:
-            requirements_file = self.app_dir / "requirements.txt"
-            if requirements_file.exists():
-                venv_python = self.app_dir / ".venv" / "Scripts" / "python.exe"
-                if venv_python.exists():
-                    subprocess.run([
-                        str(venv_python), "-m", "pip", "install", "-r", 
-                        str(requirements_file), "--upgrade"
-                    ], check=True, capture_output=True)
-                    self.logger.info("Dependencies updated successfully")
-        except Exception as e:
-            self.logger.error(f"Error updating dependencies: {e}")
-    
-    def stop_services(self):
-        """Stop running services before update"""
-        try:
-            # Signal tray app to quit via Flask API
-            try:
-                requests.post("http://localhost:5000/shutdown", 
-                             json={"token": "local-shutdown"},
-                             timeout=5)
-            except:
-                pass  # Server might not be running or already stopped
-            
-            # Also use signal file as backup
-            quit_signal_file = self.app_dir / ".tray_quit_signal"
-            quit_signal_file.touch()
-            
-            # Wait for graceful shutdown
-            time.sleep(3)
-            
-            self.logger.info("Services signaled to stop for update")
-        except Exception as e:
-            self.logger.error(f"Error stopping services: {e}")
-    
-    def start_services(self):
-        """Start services after update"""
-        try:
-            # Check if auto-startup is enabled
-            if self.is_auto_startup_enabled():
-                # Services will start on next boot, or user can start manually
-                self.logger.info("Auto-startup is enabled - services will start automatically")
-            else:
-                self.logger.info("Manual startup required after update")
-        except Exception as e:
-            self.logger.error(f"Error starting services: {e}")
-    
-    def is_auto_startup_enabled(self):
-        """Check if auto-startup is enabled"""
-        try:
-            startup_key = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-            app_name = "Label Print Server"
-            
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, startup_key, 0, winreg.KEY_READ) as key:
-                winreg.QueryValueEx(key, app_name)
-                return True
-        except FileNotFoundError:
-            return False
-    
-    def restore_from_backup(self, backup_path):
-        """Restore from backup in case of update failure"""
-        try:
-            self.logger.info(f"Restoring from backup: {backup_path}")
-            
-            with zipfile.ZipFile(backup_path, 'r') as backup_zip:
-                backup_zip.extractall(self.app_dir)
-            
-            self.logger.info("Backup restored successfully")
-        except Exception as e:
-            self.logger.error(f"Error restoring backup: {e}")
-            raise
-    
+        """Stage the downloaded installer and launch it after shutdown."""
+        updater_script = self._create_updater_script(Path(download_path), update_info["version"])
+        self._launch_updater_script(updater_script)
+
+        self.logger.info("Scheduled installer update to %s using %s", update_info["version"], download_path)
+        return {
+            "status": "scheduled",
+            "version": update_info["version"],
+            "installer_path": str(download_path),
+            "message": (
+                f"Update v{update_info['version']} downloaded. The installer will now run and "
+                f"startup will stay enabled by default."
+            ),
+        }
+
+    def _create_updater_script(self, installer_path, new_version):
+        """Create a temporary batch script that launches the installer after shutdown."""
+        updater_dir = Path(tempfile.gettempdir()) / "LabelPrintServerUpdate"
+        updater_dir.mkdir(parents=True, exist_ok=True)
+        script_path = updater_dir / f"apply_update_{int(time.time())}.bat"
+
+        installer = str(installer_path)
+
+        script_contents = f"""@echo off
+setlocal
+set "INSTALLER={installer}"
+set "NEW_VERSION={new_version}"
+
+timeout /t 2 /nobreak >nul
+
+powershell -NoProfile -Command "Start-Process -FilePath '%INSTALLER%' -Verb RunAs -Wait -ArgumentList '/VERYSILENT /NORESTART /CLOSEAPPLICATIONS /TASKS=""startupicon""'"
+del /Q "%INSTALLER%" >nul 2>&1
+del /Q "%~f0" >nul 2>&1
+"""
+
+        script_path.write_text(script_contents, encoding="utf-8")
+        return script_path
+
+    def _launch_updater_script(self, script_path):
+        """Launch the detached updater script."""
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "DETACHED_PROCESS"):
+            creationflags |= subprocess.DETACHED_PROCESS
+
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(script_path)],
+            close_fds=True,
+            creationflags=creationflags,
+        )
+
     def check_and_update(self, force=False, auto_install=None):
-        """Main method to check for updates and optionally install"""
+        """Check GitHub and optionally download/stage the newer installer."""
         try:
-            # Check for updates
-            update_info = self.check_for_updates(force)
-            
+            update_info = self.check_for_updates(force=force)
             if not update_info:
                 return {"status": "no_update", "message": "No updates available"}
-            
-            # Determine if we should auto-install
-            should_auto_install = (
-                auto_install if auto_install is not None 
-                else self.config.get("auto_install", False)
-            )
-            
+
+            should_auto_install = auto_install if auto_install is not None else self.config.get("auto_install", False)
             if should_auto_install:
-                # Download and install automatically
-                self.logger.info("Auto-installing update...")
-                
-                def progress_callback(progress):
-                    self.logger.info(f"Download progress: {progress:.1f}%")
-                
-                download_path = self.download_update(update_info, progress_callback)
-                self.install_update(download_path, update_info)
-                
-                return {
-                    "status": "updated",
-                    "version": update_info["version"],
-                    "message": f"Updated to version {update_info['version']}"
-                }
-            else:
-                # Notify about available update
-                return {
-                    "status": "update_available",
-                    "version": update_info["version"],
-                    "changelog": update_info["changelog"],
-                    "published_at": update_info["published_at"],
-                    "message": f"Update {update_info['version']} is available"
-                }
-                
-        except Exception as e:
-            self.logger.error(f"Error in check_and_update: {e}")
-            return {"status": "error", "message": str(e)}
-    
-    def manual_update(self, version=None):
-        """Manually trigger update installation"""
+                download_path = self.download_update(update_info)
+                result = self.install_update(download_path, update_info)
+                return result
+
+            return {
+                "status": "update_available",
+                "version": update_info["version"],
+                "release_name": update_info["release_name"],
+                "asset_name": update_info["asset_name"],
+                "published_at": update_info["published_at"],
+                "changelog": update_info["changelog"],
+                "html_url": update_info["html_url"],
+                "message": f"Update {update_info['version']} is available",
+            }
+        except Exception as exc:
+            self.logger.error("Error in check_and_update: %s", exc)
+            return {"status": "error", "message": str(exc)}
+
+    def manual_update(self, version_str=None):
+        """Manually download and stage the latest update."""
         try:
             update_info = self.check_for_updates(force=True)
-            
             if not update_info:
                 return {"status": "no_update", "message": "No updates available"}
-            
-            # Download and install
-            download_path = self.download_update(update_info)
-            self.install_update(download_path, update_info)
-            
-            return {
-                "status": "success",
-                "version": update_info["version"],
-                "message": f"Successfully updated to version {update_info['version']}"
-            }
-            
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
 
-# Background update checker
+            if version_str and update_info["version"] != version_str:
+                return {
+                    "status": "error",
+                    "message": f"Latest available version is {update_info['version']}, not {version_str}",
+                }
+
+            download_path = self.download_update(update_info)
+            return self.install_update(download_path, update_info)
+        except Exception as exc:
+            self.logger.error("Manual update failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
+
+
 class UpdateChecker:
-    def __init__(self, update_manager):
+    def __init__(self, update_manager, on_update_available=None):
         self.update_manager = update_manager
+        self.on_update_available = on_update_available
         self.running = False
         self.thread = None
-    
+
     def start(self):
-        """Start background update checking"""
-        if self.update_manager.config.get("auto_check", True):
-            self.running = True
-            self.thread = threading.Thread(target=self._check_loop, daemon=True)
-            self.thread.start()
-    
+        """Start background update checks."""
+        if self.running or not self.update_manager.config.get("auto_check", True):
+            return
+
+        self.running = True
+        self.thread = threading.Thread(target=self._check_loop, daemon=True)
+        self.thread.start()
+
     def stop(self):
-        """Stop background update checking"""
+        """Stop background update checks."""
         self.running = False
-    
+
     def _check_loop(self):
-        """Background update check loop"""
+        """Periodically check for updates while respecting configured intervals."""
         while self.running:
             try:
-                # Check for updates
-                result = self.update_manager.check_and_update()
-                
-                # Log results
-                if result["status"] == "update_available":
-                    self.update_manager.logger.info(f"Update available: {result['version']}")
-                
-                # Wait for next check (check every hour, but respect config)
-                interval = self.update_manager.config.get("check_interval_hours", 24)
-                sleep_time = min(interval * 3600, 3600)  # Max 1 hour sleep
-                
-                for _ in range(int(sleep_time)):
-                    if not self.running:
-                        break
-                    time.sleep(1)
-                    
-            except Exception as e:
-                self.update_manager.logger.error(f"Background update check error: {e}")
-                time.sleep(600)  # Wait 10 minutes on error
+                result = self.update_manager.check_and_update(force=False)
+                if result.get("status") == "update_available" and self.on_update_available:
+                    self.on_update_available(result)
+            except Exception as exc:
+                self.update_manager.logger.error("Background update check error: %s", exc)
 
-# CLI interface
+            for _ in range(900):
+                if not self.running:
+                    return
+                time.sleep(1)
+
+
 def main():
-    """Command line interface for update management"""
+    """Small CLI for manual update testing."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Label Print Server Update Manager")
-    parser.add_argument("command", choices=["check", "update", "config", "status"], 
-                       help="Command to execute")
-    parser.add_argument("--force", action="store_true", help="Force check even if recently checked")
-    parser.add_argument("--auto-install", action="store_true", help="Automatically install updates")
-    parser.add_argument("--channel", choices=["stable", "beta", "all"], help="Update channel")
-    
+    parser.add_argument("command", choices=["check", "update", "config", "status"])
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--auto-install", action="store_true")
     args = parser.parse_args()
-    
+
     update_manager = UpdateManager()
-    
-    if args.channel:
-        update_manager.config["update_channel"] = args.channel
-        update_manager.save_update_config()
-    
+
     if args.command == "check":
-        print("🔍 Checking for updates...")
-        result = update_manager.check_and_update(force=args.force, auto_install=args.auto_install)
-        print(f"📊 Result: {result}")
-        
+        print(update_manager.check_and_update(force=args.force, auto_install=args.auto_install))
     elif args.command == "update":
-        print("📦 Manually updating...")
-        result = update_manager.manual_update()
-        print(f"📊 Result: {result}")
-        
+        print(update_manager.manual_update())
     elif args.command == "config":
-        print("⚙️ Current Configuration:")
-        for key, value in update_manager.config.items():
-            print(f"  {key}: {value}")
-            
+        print(json.dumps(update_manager.config, indent=2))
     elif args.command == "status":
-        print(f"📋 Label Print Server Update Status:")
-        print(f"  Current Version: {update_manager.current_version}")
-        print(f"  Auto Check: {update_manager.config['auto_check']}")
-        print(f"  Auto Install: {update_manager.config['auto_install']}")
-        print(f"  Update Channel: {update_manager.config['update_channel']}")
-        print(f"  Last Check: {update_manager.config.get('last_check', 'Never')}")
+        print(
+            json.dumps(
+                {
+                    "current_version": update_manager.current_version,
+                    "config": update_manager.config,
+                },
+                indent=2,
+            )
+        )
+
 
 if __name__ == "__main__":
     main()

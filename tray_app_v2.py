@@ -130,19 +130,24 @@ class ServerManager:
 class GUIManager:
     """Manages the settings GUI window"""
     
-    def __init__(self, server_mgr, quit_callback):
+    def __init__(self, server_mgr, quit_callback, notify_callback=None):
         self.server_mgr = server_mgr
         self.quit_callback = quit_callback
+        self.notify_callback = notify_callback
         self.window = None
         self.root = None
         self.lock = threading.Lock()
         self.update_manager = UpdateManager()
         self.available_update = None
+        self.update_check_thread = None
+        self.update_check_running = True
         
         # Database pagination
         self.db_page = 0
         self.db_page_size = 50
         self.db_search_query = ""
+
+        self.start_background_update_checks()
     
     def show(self):
         """Show the GUI window (creates if needed, restores if minimized)"""
@@ -201,7 +206,7 @@ class GUIManager:
         # Load database records
         self._load_database_records()
         
-        # Check for updates in background
+        # Refresh update status when the window opens
         threading.Thread(target=self._check_for_updates_background, daemon=True).start()
     
     def _create_control_ui(self):
@@ -416,6 +421,10 @@ class GUIManager:
         self.update_status_label = tk.Label(version_frame, text="Checking for updates...",
                                            font=('Arial', 10), bg='white', fg='#7f8c8d')
         self.update_status_label.pack(anchor='w', pady=10)
+
+        self.update_meta_label = tk.Label(version_frame, text="", font=('Arial', 9),
+                                          bg='white', fg='#7f8c8d', justify='left')
+        self.update_meta_label.pack(anchor='w', pady=2)
         
         # Changelog
         tk.Label(parent, text="Release Notes:", font=('Arial', 10, 'bold'),
@@ -442,12 +451,33 @@ class GUIManager:
                  font=('Arial', 10), bg='#3498db', fg='white',
                  padx=20, pady=10, relief='flat', cursor='hand2').pack(side='left', padx=5)
         
-        self.install_update_btn = tk.Button(btn_frame, text="📥 Install Update",
+        self.install_update_btn = tk.Button(btn_frame, text="📥 Download && Update EXE",
                                            command=self._install_update,
                                            font=('Arial', 10), bg='#27ae60', fg='white',
                                            padx=20, pady=10, relief='flat', cursor='hand2',
                                            state='disabled')
         self.install_update_btn.pack(side='left', padx=5)
+
+    def start_background_update_checks(self):
+        """Start periodic update checks for tray notifications."""
+        if self.update_check_thread and self.update_check_thread.is_alive():
+            return
+
+        self.update_check_thread = threading.Thread(
+            target=self._background_update_check_loop,
+            daemon=True
+        )
+        self.update_check_thread.start()
+
+    def _background_update_check_loop(self):
+        """Check for GitHub updates periodically."""
+        while self.update_check_running:
+            self._check_for_updates_background()
+
+            for _ in range(900):
+                if not self.update_check_running:
+                    return
+                time.sleep(1)
     
     def _load_database_records(self):
         """Load database records"""
@@ -524,7 +554,8 @@ class GUIManager:
         """Check for updates in background"""
         try:
             result = self.update_manager.check_and_update(force=False)
-            
+            self._handle_update_result(result, notify_user=True)
+
             if self.window and self.window.winfo_exists():
                 self.window.after(0, lambda: self._update_ui_after_check(result))
         except Exception as e:
@@ -536,19 +567,50 @@ class GUIManager:
         
         def check():
             result = self.update_manager.check_and_update(force=True)
+            self._handle_update_result(result, notify_user=False)
             if self.window and self.window.winfo_exists():
                 self.window.after(0, lambda: self._update_ui_after_check(result))
         
         threading.Thread(target=check, daemon=True).start()
+
+    def _handle_update_result(self, result, notify_user):
+        """Persist update state and notify once per released version."""
+        if not result or result.get('status') != 'update_available':
+            return
+
+        self.available_update = result
+        if notify_user and self.update_manager.should_notify_for(result['version']):
+            self.update_manager.mark_notified(result['version'])
+            self._notify_update_available(result)
+
+    def _notify_update_available(self, result):
+        """Notify the user that a new GitHub release is available."""
+        message = f"Version {result['version']} is available. Open Updates to download and update the EXE."
+
+        if self.notify_callback:
+            try:
+                self.notify_callback("Label Print Server Update", message)
+                return
+            except Exception as e:
+                print(f"Tray notification failed: {e}")
+
+        if self.window and self.window.winfo_exists():
+            self.window.after(0, lambda: messagebox.showinfo("Update Available", message))
     
     def _update_ui_after_check(self, result):
         """Update UI after update check"""
+        if not result:
+            return
+
         if result['status'] == 'update_available':
             self.available_update = result
             self.update_status_label.config(
                 text=f"✨ Update Available: v{result['version']}", 
                 fg='#27ae60'
             )
+            published = result.get('published_at') or 'Unknown publish date'
+            asset_name = result.get('asset_name') or 'GitHub release asset'
+            self.update_meta_label.config(text=f"Asset: {asset_name}\nPublished: {published}")
             self.install_update_btn.config(state='normal')
             
             # Show changelog
@@ -557,6 +619,7 @@ class GUIManager:
             
         elif result['status'] == 'no_update':
             self.update_status_label.config(text="✅ Up to date", fg='#27ae60')
+            self.update_meta_label.config(text="")
             self.install_update_btn.config(state='disabled')
             self.changelog_text.delete('1.0', 'end')
             self.changelog_text.insert('1.0', 'You are running the latest version.')
@@ -566,6 +629,7 @@ class GUIManager:
                 text=f"❌ Error: {result['message']}", 
                 fg='#e74c3c'
             )
+            self.update_meta_label.config(text="")
             self.install_update_btn.config(state='disabled')
     
     def _install_update(self):
@@ -580,18 +644,15 @@ class GUIManager:
         )
         
         if result:
-            self.update_status_label.config(text="📥 Downloading update...")
+            self.update_status_label.config(text="📥 Downloading EXE update...")
             
             def install():
                 try:
                     download_path = self.update_manager.download_update(self.available_update)
-                    self.update_manager.install_update(download_path, self.available_update)
+                    install_result = self.update_manager.install_update(download_path, self.available_update)
                     
                     if self.window and self.window.winfo_exists():
-                        self.window.after(0, lambda: messagebox.showinfo(
-                            "Update Complete",
-                            "Update installed! Please restart the application."
-                        ))
+                        self.window.after(0, lambda: self._finish_scheduled_update(install_result))
                 except Exception as e:
                     if self.window and self.window.winfo_exists():
                         self.window.after(0, lambda: messagebox.showerror(
@@ -600,6 +661,19 @@ class GUIManager:
                         ))
             
             threading.Thread(target=install, daemon=True).start()
+
+    def _finish_scheduled_update(self, install_result):
+        """Close the app so the updater script can replace the EXE and relaunch it."""
+        messagebox.showinfo(
+            "Update Ready",
+            install_result.get(
+                'message',
+                'The update has been downloaded. The application will now restart to apply it.'
+            )
+        )
+        self.update_check_running = False
+        if self.quit_callback:
+            self.quit_callback()
     
     def _minimize_to_tray(self):
         """Minimize window to tray"""
@@ -625,6 +699,7 @@ class GUIManager:
     
     def _quit_app(self):
         """Quit the entire application"""
+        self.update_check_running = False
         if self.server_mgr.is_running():
             result = messagebox.askyesno(
                 "Confirm Quit",
@@ -662,7 +737,7 @@ class TrayApp:
         self._create_lock_file()
         
         # Setup GUI manager
-        self.gui_mgr = GUIManager(self.server_mgr, self.quit)
+        self.gui_mgr = GUIManager(self.server_mgr, self.quit, self._notify_user)
         
         # Load tray icon image
         icon_image = self._load_icon()
@@ -793,6 +868,18 @@ class TrayApp:
         """Quit from tray menu"""
         self.quit()
 
+    def _notify_user(self, title, message):
+        """Show a tray notification when supported."""
+        if self.icon:
+            try:
+                self.icon.notify(message, title)
+                return
+            except Exception as e:
+                print(f"Tray notification not supported: {e}")
+
+        if self.gui_mgr and self.gui_mgr.root:
+            self.gui_mgr.root.after(0, lambda: messagebox.showinfo(title, message))
+
     def _start_server_with_boot_logic(self):
         """Start the server after startup dependencies are ready."""
         if self.startup_thread and self.startup_thread.is_alive():
@@ -921,6 +1008,8 @@ class TrayApp:
         """Quit the application"""
         print("Quitting application...")
         self.running = False
+        if self.gui_mgr:
+            self.gui_mgr.update_check_running = False
         
         # Stop server
         self.server_mgr.stop()

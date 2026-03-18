@@ -2,8 +2,11 @@
   "auto_check": true,
   "auto_install": false,
   "check_interval_hours": 24,
-  "last_check": "2026-03-18T11:38:53.509159",
+  "last_check": "2026-03-18T13:01:28.254310",
+  "last_notified_version": null,
   "update_channel": "stable",
   "backup_enabled": true,
-  "notification_enabled": true
+  "notification_enabled": true,
+  "github_repo": "goks/Label-print-server",
+  "asset_name_contains": "LabelPrintServer_Setup"
 }
