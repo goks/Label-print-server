@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
-from flask import Flask, render_template, request, jsonify, g
+from flask import Flask, render_template, request, jsonify, g, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 import pyodbc
 import subprocess
@@ -1143,6 +1143,15 @@ def print_label_text(quotation, party_info, copy_number=None, total_copies=None)
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/favicon.ico')
+def favicon():
+    """Serve the application favicon to avoid noisy browser 404s."""
+    return send_from_directory(
+        str(APP_BASE_DIR / 'icons'),
+        'favicon.ico',
+        mimetype='image/x-icon'
+    )
 
 @app.route('/lookup', methods=['POST'])
 def lookup():
